@@ -756,26 +756,32 @@
     if (midVal !== null) seq.push({ name: "中繼", val: midVal });
     seq.push({ name: "目標", val: targetVal });
 
-    // 方向檢查
+    // 方向檢查（雙向智慧判定：無論學員填「引導客戶讓步階梯」或「回報對方出價階梯」，只要單向朝目標價收斂皆為 OK）
     if (seq.length >= 2) {
-      let dirOk = true;
+      let allUp = true;
+      let allDown = true;
       for (let i = 1; i < seq.length; i++) {
-        if (isUp && !(seq[i].val > seq[i - 1].val)) dirOk = false;
-        if (!isUp && !(seq[i].val < seq[i - 1].val)) dirOk = false;
+        if (!(seq[i].val > seq[i - 1].val)) allUp = false;
+        if (!(seq[i].val < seq[i - 1].val)) allDown = false;
       }
-      if (!dirOk) {
+      if (!allUp && !allDown) {
         results.push({
           type: "err",
           tag: "要改",
-          text: isUp
-            ? `價格階梯方向有誤：賣方仲介請屋主接受的價格，每一步都要大於前一步，一路往上走到 ${formatNum(targetVal)} 萬。`
-            : `價格階梯方向有誤：買方仲介跟買方要的價格，每一步都要小於前一步，一路往下走到 ${formatNum(targetVal)} 萬。`
+          text: `價格階梯方向有誤：請朝目標價 ${formatNum(targetVal)} 萬單向收斂（由高往低逐步讓到 ${formatNum(targetVal)} 萬，或由低往高逐步加到 ${formatNum(targetVal)} 萬）。`
         });
       } else {
+        const modeDesc = isUp
+          ? allDown
+            ? "引導屋主降價階梯"
+            : "回報買方加價階梯"
+          : allUp
+          ? "引導買方加價階梯"
+          : "對買方要價收斂階梯";
         results.push({
           type: "ok",
           tag: "OK",
-          text: `方向正確（${seq.map((s) => formatNum(s.val)).join(" → ")} 萬）`
+          text: `方向正確｜${modeDesc}（${seq.map((s) => formatNum(s.val)).join(" → ")} 萬）`
         });
       }
     }
@@ -806,27 +812,30 @@
     }
 
     // 開口合理性檢查
-    if (isUp && openVal !== null) {
+    if (openVal !== null) {
       if (openVal < offerVal) {
         results.push({
           type: "warn",
           tag: "注意",
-          text: "注意：開口比買方真實出價還低"
+          text: `注意：開口（${formatNum(openVal)} 萬）比買方真實出價（${formatNum(offerVal)} 萬）還低`
         });
-      } else if (openVal > offerVal) {
+      } else if (openVal >= askVal) {
+        results.push({
+          type: "err",
+          tag: "要改",
+          text: `要改：開口（${formatNum(openVal)} 萬）已經到屋主開價（${formatNum(askVal)} 萬）以上`
+        });
+      } else if (isUp && openVal > offerVal && openVal < targetVal) {
         results.push({
           type: "info",
           tag: "提醒",
           text: "提醒：記得說得出買方那邊為什麼會到這個數字"
         });
-      }
-    }
-    if (!isUp && openVal !== null) {
-      if (openVal >= askVal) {
+      } else if (isUp && openVal > targetVal) {
         results.push({
-          type: "err",
-          tag: "要改",
-          text: "要改：開口已經到屋主開價以上，買方不會相信"
+          type: "info",
+          tag: "提醒",
+          text: `提醒：請屋主從 ${formatNum(askVal)} 萬降到 ${formatNum(openVal)} 萬時，記得帶上買方故事與交換條件`
         });
       }
     }
