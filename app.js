@@ -15,13 +15,13 @@
 
   function getRoleDisplayName(roleId) {
     if (roleId === "seller") {
-      if (state.scenario === "banqiao") return "屋主（吳家）";
-      if (state.scenario === "zhongshan") return "屋主（周家）";
+      if (state.scenario === "banqiao") return "屋主（張家）";
+      if (state.scenario === "zhongshan") return "屋主（高董）";
       return "屋主（林家）";
     }
     if (roleId === "buyer") {
-      if (state.scenario === "banqiao") return "買方（張家）";
-      if (state.scenario === "zhongshan") return "買方（許家）";
+      if (state.scenario === "banqiao") return "買方（周家）";
+      if (state.scenario === "zhongshan") return "買方（許醫師）";
       return "買方（陳家）";
     }
     const r = ROLES.find((x) => x.id === roleId);
@@ -83,7 +83,7 @@
           id: "jingmei",
           badge: "劇本一｜換屋 vs 學區",
           shortTitle: "景美三房",
-          subtitle: "換屋帶孫 vs 學區首購（2,200 萬 vs 1,800 萬 → 目標 2,000 萬）"
+          subtitle: "換屋帶孫 vs 學區首購（開價 2,200 萬 vs 斡旋 1,800 萬）"
         },
         jingmeiData
       )
@@ -1154,12 +1154,12 @@
               const isSel = state.scenario === sc.id ? "selected" : "";
               const ask = formatNum(sc.CASE.ask);
               const offer = formatNum(sc.CASE.offer);
-              const target = formatNum(sc.CASE.target);
+              const diff = formatNum(sc.CASE.ask - sc.CASE.offer);
               return `
                 <button type="button" class="scenario-card ${isSel}" data-scenario="${escapeHtml(sc.id)}">
                   <div class="scenario-badge">${escapeHtml(sc.badge || "實戰劇本")}</div>
                   <div class="scenario-title">${escapeHtml(sc.CASE.title)}</div>
-                  <div class="scenario-price">開價 ${ask} 萬 vs 斡旋 ${offer} 萬 → 目標 ${target} 萬</div>
+                  <div class="scenario-price">開價 ${ask} 萬 vs 斡旋 ${offer} 萬（價差 ${diff} 萬）</div>
                   <div class="scenario-desc">
                     <div><strong>屋主：</strong>${escapeHtml(sc.SELLER.who)}</div>
                     <div><strong>買方：</strong>${escapeHtml(sc.BUYER.who)}</div>
@@ -1454,6 +1454,7 @@
         <div class="card-title">📊 斡旋現況</div>
         <div class="status-grid">
           ${C.status
+            .filter((s) => !String(s[0]).includes("成交價"))
             .map(
               (s) => `
             <div class="stat-box">
@@ -1895,6 +1896,10 @@
           負責：${escapeHtml(A.client)}
         </h1>
         <span class="page-subtitle">${escapeHtml(A.intro)}</span>
+      </div>
+
+      <div class="alert alert-info">
+        <span>🎯 <strong>你的仲介字卡專屬提示｜本劇本目標成交價：${formatNum(CONTENT.CASE.target)} 萬</strong>（開價 ${formatNum(CONTENT.CASE.ask)} 萬 vs 斡旋 ${formatNum(CONTENT.CASE.offer)} 萬，請與另一位仲介合作在每一步換取條件收斂至目標價）</span>
       </div>
 
       <!-- 即時連線區：你的客戶與另一位仲介 -->
@@ -2400,6 +2405,10 @@
         </div>
       </div>
 
+      <div class="alert alert-info">
+        <span>🎯 <strong>店長字卡專屬提示｜本劇本目標成交價：${formatNum(CONTENT.CASE.target)} 萬</strong>（屋主真正底線與買方真正上限皆涵蓋此目標價，兩輪後差距 40 萬內請出面完成最後一步）</span>
+      </div>
+
       <!-- 即時牌桌（店長看得到兩邊完整反應卡內容） -->
       <div class="card">
         <div class="card-title">👀 即時牌桌（全組同步・店長可看完整反應卡）</div>
@@ -2619,7 +2628,7 @@
     return `
       <div class="page-header">
         <h1>📈 議價看板｜雙方價格收斂圖</h1>
-        <span class="page-subtitle">起點 ${formatNum(askVal)} vs ${formatNum(offerVal)} → 目標 ${formatNum(targetVal)} 萬握手</span>
+        <span class="page-subtitle">起點：屋主開價 ${formatNum(askVal)} 萬 vs 買方斡旋 ${formatNum(offerVal)} 萬（價差 ${formatNum(askVal - offerVal)} 萬）</span>
       </div>
 
       <!-- 狀態列（7.2 節） -->
@@ -2634,7 +2643,6 @@
           <div style="display:flex;gap:14px;font-size:0.86rem;">
             <span><span class="role-dot" style="background:#9B2A1F"></span> 屋主開價／讓價</span>
             <span><span class="role-dot" style="background:#2F5D62"></span> 買方出價／加價</span>
-            <span style="color:var(--accent);">--- ${formatNum(targetVal)} 萬目標線</span>
           </div>
         </div>
         <div class="chart-box">
@@ -2643,12 +2651,10 @@
             ${yTicks
               .map((yVal) => {
                 const y = getY(yVal);
-                const isTarget = yVal === targetVal;
                 return `
                   <line x1="${padL}" y1="${y}" x2="${svgW - padR}" y2="${y}"
-                    stroke="${isTarget ? "#8B6A45" : "#E5DEC9"}"
-                    stroke-width="${isTarget ? "2" : "1"}"
-                    ${isTarget ? 'stroke-dasharray="6,5"' : ""} />
+                    stroke="#E5DEC9"
+                    stroke-width="1" />
                   <text x="${padL - 10}" y="${y + 4}" text-anchor="end" font-size="12" font-weight="700" fill="#5C4B3B">${yVal}</text>
                 `;
               })
