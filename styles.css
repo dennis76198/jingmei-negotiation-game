@@ -678,24 +678,14 @@ textarea {
 .brand-logo-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 18px;
-  border: 1.5px solid var(--accent);
-  border-radius: 8px;
-  background: var(--card);
-  margin-bottom: 8px;
+  justify-content: center;
+  margin-bottom: 6px;
 }
-.brand-zh {
-  font-weight: 900;
-  font-size: 1.05rem;
-  letter-spacing: 0.15em;
-  color: var(--text);
-}
-.brand-en {
-  font-size: 0.72rem;
-  letter-spacing: 0.18em;
-  color: var(--accent);
-  font-weight: 700;
+.footer-logo-img {
+  height: 54px;
+  width: auto;
+  max-width: 100%;
+  display: block;
 }
 
 /* QR Code 區塊 */
