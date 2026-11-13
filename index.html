@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>景美三房斡旋遊戲｜公開多人連線版</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 固定頂部：房間狀態列 + 店長宣布成交橫幅 + 分頁導覽 -->
+  <header class="top-sticky">
+    <div id="deal-banner" class="deal-banner" role="status" aria-live="polite"></div>
+    <div class="status-bar">
+      <div class="status-left">
+        <span id="conn-pill" class="status-pill">
+          <span id="conn-dot" class="status-dot local"></span>
+          <span id="conn-text">單機模式</span>
+        </span>
+        <span id="room-pill" class="status-pill">房間：未加入</span>
+        <span id="role-pill" class="status-pill">角色：未選擇</span>
+      </div>
+      <div class="status-right">
+        <span id="online-pill" class="status-pill">在線：0 人</span>
+        <span id="round-pill" class="status-pill">輪次：尚未開始</span>
+      </div>
+    </div>
+    <nav id="nav-tabs" class="nav-tabs" aria-label="遊戲分頁"></nav>
+  </header>
+
+  <!-- 主頁面容器 -->
+  <main class="container">
+    <div id="app-view"></div>
+
+    <!-- 共用底部功能列 -->
+    <section class="shared-toolbar" aria-label="共用工具">
+      <div style="font-weight:700;font-size:0.9rem;color:var(--muted);">
+        📌 筆記自動保存在本機瀏覽器；房間動態即時同步給同組成員
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        <button type="button" id="btn-copy-notes" class="btn btn-sm">📋 複製我填的內容</button>
+        <button type="button" id="btn-download-html" class="btn btn-sm">🖨️ 下載可列印版</button>
+        <button type="button" id="btn-reset-all" class="btn btn-sm btn-danger">🗑️ 清空重來</button>
+      </div>
+    </section>
+
+    <!-- 頁尾品牌標誌 -->
+    <footer class="site-footer">
+      <div class="brand-logo-wrap">
+        <svg width="28" height="28" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="2" y="2" width="32" height="32" rx="6" stroke="#8B6A45" stroke-width="2.5" fill="#FFFDF8"/>
+          <path d="M8 25L18 11L28 25H8Z" stroke="#3B2F25" stroke-width="2.2" stroke-linejoin="round" fill="#EFE7DA"/>
+          <path d="M14 25V18H22V25" stroke="#9B2A1F" stroke-width="2.2" stroke-linejoin="round"/>
+        </svg>
+        <div style="text-align:left;line-height:1.25;">
+          <div class="brand-zh">謙澄不動產</div>
+          <div class="brand-en">CLARITY PROPERTIES</div>
+        </div>
+      </div>
+      <div>未來仲介研究所｜房仲實戰學院・第四堂 PART 5 完整演練（教學用虛構案例）</div>
+    </footer>
+  </main>
+
+  <!-- Firebase Compat SDK（純靜態免打包） -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <!-- 輕量 QR Code 產生器 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+  <!-- 免設定跨裝置即時同步備援引擎（當尚未填入 Firebase 金鑰時自動啟用跨手機/電腦連線） -->
+  <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+  <!-- Firebase 設定檔 -->
+  <script src="firebase-config.js"></script>
+  <!-- 本機 file:// 備援資料（部署後仍優先讀取 content.json） -->
+  <script src="content-fallback.js"></script>
+  <!-- 遊戲主程式 -->
+  <script src="app.js"></script>
+</body>
+</html>
