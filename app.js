@@ -1017,7 +1017,7 @@
 
     return `
       <div class="page-header">
-        <h1>景美三房斡旋遊戲｜房間設定</h1>
+        <h1>談判小房間｜房間設定</h1>
         <span class="page-subtitle">免登入・輸入同組代碼即可多人連線同步</span>
       </div>
 
@@ -2663,7 +2663,7 @@
   // ==================== 5.7 共用工具（複製、下載列印版、清空重來） ====================
   function buildSummaryText() {
     const lines = [];
-    lines.push(`【景美三房斡旋遊戲｜演練紀錄】`);
+    lines.push(`【談判小房間｜演練紀錄】`);
     lines.push(`房間代碼：${state.roomCode || "單機"} ｜ 暱稱：${state.nick || "未填"} ｜ 角色：${state.role}`);
     lines.push("");
 
@@ -2719,7 +2719,7 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8" />
-<title>景美三房斡旋遊戲｜可列印演練紀錄</title>
+<title>談判小房間｜可列印演練紀錄</title>
 <style>
   body { font-family: "Noto Sans TC", sans-serif; padding: 32px; color: #3B2F25; line-height: 1.6; }
   h1 { border-bottom: 2px solid #8B6A45; padding-bottom: 8px; }
@@ -2727,7 +2727,7 @@
 </style>
 </head>
 <body>
-  <h1>景美三房斡旋遊戲｜可列印演練紀錄</h1>
+  <h1>談判小房間｜可列印演練紀錄</h1>
   <pre>${summary}</pre>
   <script>window.onload = function(){ window.print(); };<\/script>
 </body>
