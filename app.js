@@ -159,7 +159,6 @@
   }
 
   function createDefaultAgentNotes() {
-    const targetStr = getTargetPriceStr();
     return {
       tasks: [false, false, false, false, false, false],
       explore: ["", "", "", "", "", "", "", ""],
@@ -172,7 +171,7 @@
       ladder: [
         { price: "", pillars: [], arg: "", cond: "", next: "" },
         { price: "", pillars: [], arg: "", cond: "", next: "" },
-        { price: targetStr, pillars: [], arg: "", cond: "", next: "" },
+        { price: "", pillars: [], arg: "", cond: "", next: "" },
         { price: "", pillars: [], arg: "", cond: "", next: "" }
       ],
       logs: [
@@ -224,12 +223,13 @@
       const def = createDefaultNotes();
       const merged = Object.assign(def, parsed);
       const targetStr = getTargetPriceStr();
-      if (merged.sagent && merged.sagent.ladder && merged.sagent.ladder[2]) {
-        merged.sagent.ladder[2].price = targetStr;
-      }
-      if (merged.bagent && merged.bagent.ladder && merged.bagent.ladder[2]) {
-        merged.bagent.ladder[2].price = targetStr;
-      }
+      // 若舊版快取在「目標」欄有自動預填值且尚未填寫論述/條件，自動清空讓仲介自己手填
+      ["sagent", "bagent"].forEach((aKey) => {
+        const r2 = merged[aKey] && merged[aKey].ladder && merged[aKey].ladder[2];
+        if (r2 && r2.price === targetStr && !r2.arg && !r2.cond && (!r2.pillars || r2.pillars.length === 0)) {
+          r2.price = "";
+        }
+      });
       return merged;
     } catch (e) {
       return createDefaultNotes();
@@ -743,18 +743,26 @@
     const rows = notes.ladder; // [開口, 中繼, 目標, 底線/上限推估]
     const openVal = sanitizePrice(rows[0].price);
     const midVal = sanitizePrice(rows[1].price);
-    const targetVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.target) || 2000;
+    const targetVal = sanitizePrice(rows[2].price);
     const askVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.ask) || 2200;
     const offerVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.offer) || 1800;
     const estVal = sanitizePrice(rows[3].price);
 
     const results = [];
 
-    // 組裝序列 = [開口, 中繼（有填才算）, 目標]
+    if (targetVal === null) {
+      results.push({
+        type: "info",
+        tag: "提醒",
+        text: "請透過訪談客戶與交換情報，自行推算並在「目標」欄填入預計成交價"
+      });
+    }
+
+    // 組裝序列 = [開口, 中繼, 目標]（有填才算）
     const seq = [];
     if (openVal !== null) seq.push({ name: "開口", val: openVal });
     if (midVal !== null) seq.push({ name: "中繼", val: midVal });
-    seq.push({ name: "目標", val: targetVal });
+    if (targetVal !== null) seq.push({ name: "目標", val: targetVal });
 
     // 方向檢查（雙向智慧判定：無論學員填「引導客戶讓步階梯」或「回報對方出價階梯」，只要單向朝目標價收斂皆為 OK）
     if (seq.length >= 2) {
@@ -768,7 +776,7 @@
         results.push({
           type: "err",
           tag: "要改",
-          text: `價格階梯方向有誤：請朝目標價 ${formatNum(targetVal)} 萬單向收斂（由高往低逐步讓到 ${formatNum(targetVal)} 萬，或由低往高逐步加到 ${formatNum(targetVal)} 萬）。`
+          text: "價格階梯方向有誤：請朝你設定的目標價單向收斂（由高往低逐步讓步，或由低往高逐步加價，不可忽高忽低）。"
         });
       } else {
         const modeDesc = isUp
@@ -825,28 +833,22 @@
           tag: "要改",
           text: `要改：開口（${formatNum(openVal)} 萬）已經到屋主開價（${formatNum(askVal)} 萬）以上`
         });
-      } else if (isUp && openVal > offerVal && openVal < targetVal) {
+      } else if (isUp) {
         results.push({
           type: "info",
           tag: "提醒",
-          text: "提醒：記得說得出買方那邊為什麼會到這個數字"
-        });
-      } else if (isUp && openVal > targetVal) {
-        results.push({
-          type: "info",
-          tag: "提醒",
-          text: `提醒：請屋主從 ${formatNum(askVal)} 萬降到 ${formatNum(openVal)} 萬時，記得帶上買方故事與交換條件`
+          text: "提醒：第一輪跟屋主溝通時，記得帶上買方故事與交換條件"
         });
       }
     }
 
-    // 柱子／論述與「要換什麼」完整性檢查（有填數字的列，含目標）
+    // 柱子／論述與「要換什麼」完整性檢查（有填數字的列）
     const stepNames = ["開口", "中繼", "目標"];
     const missingPillarOrArg = [];
     const missingCond = [];
     [0, 1, 2].forEach((idx) => {
       const r = rows[idx];
-      const hasPrice = idx === 2 || sanitizePrice(r.price) !== null;
+      const hasPrice = sanitizePrice(r.price) !== null;
       if (hasPrice) {
         const hasPillar = Array.isArray(r.pillars) && r.pillars.length > 0;
         const hasArg = String(r.arg || "").trim().length > 0;
@@ -869,20 +871,20 @@
       });
     }
 
-    // 底線／上限推估檢查
-    if (estVal !== null) {
+    // 底線／上限推估檢查（與仲介自己設定的目標價比對）
+    if (estVal !== null && targetVal !== null) {
       if (isUp) {
         if (estVal > targetVal) {
           results.push({
             type: "warn",
             tag: "注意",
-            text: `推估屋主底線 ${formatNum(estVal)} 萬 > ${formatNum(targetVal)} 萬，需要先幫屋主解開心理關卡或條件`
+            text: `你推估的屋主底線（${formatNum(estVal)} 萬）> 你設定的目標價（${formatNum(targetVal)} 萬），需要先幫屋主解開心理關卡或條件`
           });
         } else {
           results.push({
             type: "ok",
             tag: "OK",
-            text: `底線推估 OK（${formatNum(estVal)} 萬）：${formatNum(targetVal)} 談得成`
+            text: `底線推估 OK（${formatNum(estVal)} 萬）：目標價 ${formatNum(targetVal)} 萬談得成`
           });
         }
       } else {
@@ -890,13 +892,13 @@
           results.push({
             type: "warn",
             tag: "注意",
-            text: `推估買方上限 ${formatNum(estVal)} 萬 < ${formatNum(targetVal)} 萬，需確認自備款與八成貸款試算`
+            text: `你推估的買方上限（${formatNum(estVal)} 萬）< 你設定的目標價（${formatNum(targetVal)} 萬），需確認自備款與貸款試算`
           });
         } else {
           results.push({
             type: "ok",
             tag: "OK",
-            text: `上限推估 OK（${formatNum(estVal)} 萬）：${formatNum(targetVal)} 談得成`
+            text: `上限推估 OK（${formatNum(estVal)} 萬）：目標價 ${formatNum(targetVal)} 萬談得成`
           });
         }
       }
@@ -1592,6 +1594,10 @@
                 <button type="button" id="btn-toggle-role-card-inner" class="btn btn-primary">🃏 翻開角色卡</button>
               </div>`
             : `
+              <div class="alert alert-ok" style="margin-bottom:14px;">
+                <span>🎯 <strong>你的秘密目標價：${formatNum(CONTENT.CASE.target)} 萬</strong>（請勿直接告訴仲介！請依下方「關鍵數字」與「讓步規則表」，看仲介有沒有問對問題、換到條件，再逐輪給出數字）</span>
+              </div>
+
               <div style="margin-bottom:14px;">
                 <strong>你是誰：</strong>${escapeHtml(C.who)}<br/>
                 <span>${escapeHtml(C.bio)}</span>
@@ -1908,7 +1914,7 @@
       </div>
 
       <div class="alert alert-info">
-        <span>🎯 <strong>你的仲介字卡專屬提示｜本劇本目標成交價：${formatNum(CONTENT.CASE.target)} 萬</strong>（開價 ${formatNum(CONTENT.CASE.ask)} 萬 vs 斡旋 ${formatNum(CONTENT.CASE.offer)} 萬，請與另一位仲介合作在每一步換取條件收斂至目標價）</span>
+        <span>📌 <strong>仲介實戰任務：</strong>本案開價 <strong>${formatNum(CONTENT.CASE.ask)} 萬</strong> vs 買方斡旋 <strong>${formatNum(CONTENT.CASE.offer)} 萬</strong>。請透過「識局探索」問出客戶的真實數字與條件，並與另一位仲介交換情報後，在下方「價格階梯」<strong>自行推算並手填你的「目標成交價」</strong>！</span>
       </div>
 
       <!-- 即時連線區：你的客戶與另一位仲介 -->
@@ -2095,9 +2101,9 @@
                       <div style="font-size:0.78rem;color:var(--muted);">${escapeHtml(lRow[1])}</div>
                     </td>
                     <td data-label="數字（萬）">
-                      <input type="number" class="inp-ladder-price" data-idx="${idx}" min="0" max="5000" step="10" ${
-                        isTarget ? "readonly" : ""
-                      } value="${isTarget ? getTargetPriceStr() : escapeHtml(nRow.price)}" />
+                      <input type="number" class="inp-ladder-price" data-idx="${idx}" min="0" max="5000" step="10" placeholder="${
+                        isTarget ? "自己推算目標價" : "萬"
+                      }" value="${escapeHtml(nRow.price)}" />
                     </td>
                     <td data-label="柱子（勾選）與論述">
                       ${
@@ -2306,10 +2312,8 @@
     document.querySelectorAll(".inp-ladder-price").forEach((inp) => {
       inp.addEventListener("input", () => {
         const idx = Number(inp.getAttribute("data-idx"));
-        if (idx !== 2) {
-          notes.ladder[idx].price = inp.value;
-          refreshLadderChecks();
-        }
+        notes.ladder[idx].price = inp.value;
+        refreshLadderChecks();
       });
     });
     document.querySelectorAll(".chk-ladder-pillar").forEach((chk) => {
