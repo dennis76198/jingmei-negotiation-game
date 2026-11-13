@@ -3,6 +3,7 @@
 
   // 內建預設卡片資料（與 content.json 完全一致，確保 file:// 直接開也能運作，並同時支援 fetch('./content.json')）
   let CONTENT = null;
+  let SCENARIOS = {};
 
   const ROLES = [
     { id: "seller", name: "屋主（林家）", short: "屋主", colorClass: "role-seller", color: "#9B2A1F" },
@@ -11,6 +12,21 @@
     { id: "bagent", name: "買方仲介", short: "買方仲介", colorClass: "role-bagent", color: "#5E6B34" },
     { id: "manager", name: "店長／觀察員", short: "店長", colorClass: "role-manager", color: "#4A3B2E" }
   ];
+
+  function getRoleDisplayName(roleId) {
+    if (roleId === "seller") {
+      if (state.scenario === "banqiao") return "屋主（吳家）";
+      if (state.scenario === "zhongshan") return "屋主（周家）";
+      return "屋主（林家）";
+    }
+    if (roleId === "buyer") {
+      if (state.scenario === "banqiao") return "買方（張家）";
+      if (state.scenario === "zhongshan") return "買方（許家）";
+      return "買方（陳家）";
+    }
+    const r = ROLES.find((x) => x.id === roleId);
+    return r ? r.name : roleId;
+  }
 
   const TABS = [
     { id: "room", label: "房間" },
@@ -33,6 +49,7 @@
   // 狀態
   let state = {
     tab: "room",
+    scenario: "jingmei",
     uid: null,
     roomCode: "",
     nick: "",
@@ -45,9 +62,11 @@
     clientRoundView: { seller: 0, buyer: 0 },
     previewCardIdx: { seller: null, buyer: null },
     resetConfirmUntil: 0,
-    roomData: createEmptyRoomData(),
-    notes: loadNotes()
+    roomData: null,
+    notes: null
   };
+  state.roomData = createEmptyRoomData();
+  state.notes = loadNotes();
 
   let db = null;
   let roomRef = null;
@@ -56,6 +75,50 @@
   let mqttClient = null;
   let mqttConnected = false;
   let currentMqttTopic = null;
+
+  function initScenarios(jingmeiData) {
+    SCENARIOS = {
+      jingmei: Object.assign(
+        {
+          id: "jingmei",
+          badge: "劇本一｜換屋 vs 學區",
+          shortTitle: "景美三房",
+          subtitle: "換屋帶孫 vs 學區首購（2,200 萬 vs 1,800 萬 → 目標 2,000 萬）"
+        },
+        jingmeiData
+      )
+    };
+    if (window.EXTRA_SCENARIOS) {
+      Object.assign(SCENARIOS, window.EXTRA_SCENARIOS);
+    }
+    if (!SCENARIOS[state.scenario]) {
+      state.scenario = "jingmei";
+    }
+    CONTENT = SCENARIOS[state.scenario];
+    state.notes = loadNotes();
+  }
+
+  function setScenario(scenarioId, syncToRoom) {
+    if (!SCENARIOS[scenarioId]) return;
+    const changed = state.scenario !== scenarioId;
+    state.scenario = scenarioId;
+    CONTENT = SCENARIOS[scenarioId];
+    if ( state.roomData && state.roomData.meta ) {
+      state.roomData.meta.scenario = scenarioId;
+    }
+    if (changed) {
+      state.revealSellerRole = false;
+      state.revealBuyerRole = false;
+      state.previewCardIdx = { seller: null, buyer: null };
+      state.notes = loadNotes();
+    }
+    saveSession();
+    if (syncToRoom && state.roomCode) {
+      writeRoomPatch("meta/scenario", scenarioId);
+    } else {
+      renderAll();
+    }
+  }
 
   function createEmptyClientNode() {
     return {
@@ -74,7 +137,7 @@
 
   function createEmptyRoomData() {
     return {
-      meta: { createdAt: Date.now(), updatedAt: Date.now() },
+      meta: { createdAt: Date.now(), updatedAt: Date.now(), scenario: state ? state.scenario || "jingmei" : "jingmei" },
       players: {},
       manager: { round: 0, deal: null, by: null },
       clients: {
@@ -88,7 +151,15 @@
     };
   }
 
+  function getTargetPriceStr() {
+    if (CONTENT && CONTENT.CASE && CONTENT.CASE.target) {
+      return String(CONTENT.CASE.target);
+    }
+    return "2000";
+  }
+
   function createDefaultAgentNotes() {
+    const targetStr = getTargetPriceStr();
     return {
       tasks: [false, false, false, false, false, false],
       explore: ["", "", "", "", "", "", "", ""],
@@ -101,7 +172,7 @@
       ladder: [
         { price: "", pillars: [], arg: "", cond: "", next: "" },
         { price: "", pillars: [], arg: "", cond: "", next: "" },
-        { price: "2000", pillars: [], arg: "", cond: "", next: "" },
+        { price: targetStr, pillars: [], arg: "", cond: "", next: "" },
         { price: "", pillars: [], arg: "", cond: "", next: "" }
       ],
       logs: [
@@ -139,13 +210,27 @@
     };
   }
 
+  function getNotesStorageKey() {
+    const sc = (state && state.scenario) || "jingmei";
+    return sc === "jingmei" ? LS_NOTES_KEY : `${LS_NOTES_KEY}_${sc}`;
+  }
+
   function loadNotes() {
     try {
-      const raw = localStorage.getItem(LS_NOTES_KEY);
+      const key = getNotesStorageKey();
+      const raw = localStorage.getItem(key);
       if (!raw) return createDefaultNotes();
       const parsed = JSON.parse(raw);
       const def = createDefaultNotes();
-      return Object.assign(def, parsed);
+      const merged = Object.assign(def, parsed);
+      const targetStr = getTargetPriceStr();
+      if (merged.sagent && merged.sagent.ladder && merged.sagent.ladder[2]) {
+        merged.sagent.ladder[2].price = targetStr;
+      }
+      if (merged.bagent && merged.bagent.ladder && merged.bagent.ladder[2]) {
+        merged.bagent.ladder[2].price = targetStr;
+      }
+      return merged;
     } catch (e) {
       return createDefaultNotes();
     }
@@ -153,7 +238,7 @@
 
   function saveNotes() {
     try {
-      localStorage.setItem(LS_NOTES_KEY, JSON.stringify(state.notes));
+      localStorage.setItem(getNotesStorageKey(), JSON.stringify(state.notes));
     } catch (e) {}
   }
 
@@ -168,6 +253,7 @@
       const raw = localStorage.getItem(LS_SESSION_KEY);
       if (raw) {
         const s = JSON.parse(raw);
+        if (s.scenario) state.scenario = String(s.scenario);
         if (s.nick) state.nick = String(s.nick).slice(0, 20);
         if (s.roomCode) state.roomCode = normalizeRoomCode(s.roomCode);
         if (s.role && ROLES.some((r) => r.id === s.role)) state.role = s.role;
@@ -177,8 +263,12 @@
       }
     } catch (e) {}
 
-    // 檢查網址 ?room= 參數
+    // 檢查網址 ?room= 與 ?scenario= 參數
     const params = new URLSearchParams(window.location.search);
+    const urlScenario = params.get("scenario");
+    if (urlScenario && ["jingmei", "banqiao", "zhongshan"].includes(urlScenario)) {
+      state.scenario = urlScenario;
+    }
     const urlRoom = params.get("room");
     if (urlRoom) {
       const clean = normalizeRoomCode(urlRoom);
@@ -193,6 +283,7 @@
       localStorage.setItem(
         LS_SESSION_KEY,
         JSON.stringify({
+          scenario: state.scenario,
           roomCode: state.roomCode,
           nick: state.nick,
           role: state.role,
@@ -329,7 +420,15 @@
   function normalizeRoomData(raw) {
     const base = createEmptyRoomData();
     if (!raw || typeof raw !== "object") return base;
-    if (raw.meta) base.meta = Object.assign(base.meta, raw.meta);
+    if (raw.meta) {
+      base.meta = Object.assign(base.meta, raw.meta);
+      if (raw.meta.scenario && SCENARIOS[raw.meta.scenario] && raw.meta.scenario !== state.scenario) {
+        state.scenario = raw.meta.scenario;
+        CONTENT = SCENARIOS[state.scenario];
+        state.notes = loadNotes();
+        saveSession();
+      }
+    }
     if (raw.players && typeof raw.players === "object") base.players = raw.players;
     if (raw.manager && typeof raw.manager === "object") {
       base.manager = {
@@ -641,15 +740,17 @@
   function checkAgentLadder(agentKey) {
     const isUp = agentKey === "sagent";
     const notes = state.notes[agentKey];
-    const rows = notes.ladder; // [開口, 中繼, 目標(2000), 底線/上限推估]
+    const rows = notes.ladder; // [開口, 中繼, 目標, 底線/上限推估]
     const openVal = sanitizePrice(rows[0].price);
     const midVal = sanitizePrice(rows[1].price);
-    const targetVal = 2000;
+    const targetVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.target) || 2000;
+    const askVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.ask) || 2200;
+    const offerVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.offer) || 1800;
     const estVal = sanitizePrice(rows[3].price);
 
     const results = [];
 
-    // 組裝序列 = [開口, 中繼（有填才算）, 2000]
+    // 組裝序列 = [開口, 中繼（有填才算）, 目標]
     const seq = [];
     if (openVal !== null) seq.push({ name: "開口", val: openVal });
     if (midVal !== null) seq.push({ name: "中繼", val: midVal });
@@ -667,8 +768,8 @@
           type: "err",
           tag: "要改",
           text: isUp
-            ? "價格階梯方向有誤：賣方仲介請屋主接受的價格，每一步都要大於前一步，一路往上走到 2,000 萬。"
-            : "價格階梯方向有誤：買方仲介跟買方要的價格，每一步都要小於前一步，一路往下走到 2,000 萬。"
+            ? `價格階梯方向有誤：賣方仲介請屋主接受的價格，每一步都要大於前一步，一路往上走到 ${formatNum(targetVal)} 萬。`
+            : `價格階梯方向有誤：買方仲介跟買方要的價格，每一步都要小於前一步，一路往下走到 ${formatNum(targetVal)} 萬。`
         });
       } else {
         results.push({
@@ -706,13 +807,13 @@
 
     // 開口合理性檢查
     if (isUp && openVal !== null) {
-      if (openVal < 1800) {
+      if (openVal < offerVal) {
         results.push({
           type: "warn",
           tag: "注意",
           text: "注意：開口比買方真實出價還低"
         });
-      } else if (openVal > 1800) {
+      } else if (openVal > offerVal) {
         results.push({
           type: "info",
           tag: "提醒",
@@ -721,7 +822,7 @@
       }
     }
     if (!isUp && openVal !== null) {
-      if (openVal >= 2200) {
+      if (openVal >= askVal) {
         results.push({
           type: "err",
           tag: "要改",
@@ -762,31 +863,31 @@
     // 底線／上限推估檢查
     if (estVal !== null) {
       if (isUp) {
-        if (estVal > 2000) {
+        if (estVal > targetVal) {
           results.push({
             type: "warn",
             tag: "注意",
-            text: `推估屋主底線 ${formatNum(estVal)} 萬 > 2,000 萬，需要先幫屋主解開心理關卡或條件`
+            text: `推估屋主底線 ${formatNum(estVal)} 萬 > ${formatNum(targetVal)} 萬，需要先幫屋主解開心理關卡或條件`
           });
         } else {
           results.push({
             type: "ok",
             tag: "OK",
-            text: `底線推估 OK（${formatNum(estVal)} 萬）：2,000 談得成`
+            text: `底線推估 OK（${formatNum(estVal)} 萬）：${formatNum(targetVal)} 談得成`
           });
         }
       } else {
-        if (estVal < 2000) {
+        if (estVal < targetVal) {
           results.push({
             type: "warn",
             tag: "注意",
-            text: `推估買方上限 ${formatNum(estVal)} 萬 < 2,000 萬，需確認自備款與八成貸款試算`
+            text: `推估買方上限 ${formatNum(estVal)} 萬 < ${formatNum(targetVal)} 萬，需確認自備款與八成貸款試算`
           });
         } else {
           results.push({
             type: "ok",
             tag: "OK",
-            text: `上限推估 OK（${formatNum(estVal)} 萬）：2,000 談得成`
+            text: `上限推估 OK（${formatNum(estVal)} 萬）：${formatNum(targetVal)} 談得成`
           });
         }
       }
@@ -798,6 +899,9 @@
   // 7.2 議價看板資料與狀態
   function getBoardSeries() {
     const useRoom = state.joined || hasAnyRoomClientData();
+    const askVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.ask) || 2200;
+    const offerVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.offer) || 1800;
+    const targetVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.target) || 2000;
     const sRounds = [0, 1, 2].map((i) => {
       if (useRoom) {
         const r = state.roomData.clients.seller.rounds[String(i)];
@@ -817,9 +921,9 @@
       }
     });
 
-    // 起點 (idx=0): 屋主 2200, 買方 1800
-    const sPrices = [2200];
-    const bPrices = [1800];
+    // 起點 (idx=0)
+    const sPrices = [askVal];
+    const bPrices = [offerVal];
     let lastValidIdx = 0;
 
     for (let i = 0; i < 3; i++) {
@@ -840,13 +944,13 @@
     let statusClass = "alert-info";
 
     if (lastValidIdx === 0) {
-      statusText = "起點：屋主開價 2,200 萬、買方斡旋 1,800 萬（還差 400 萬）";
+      statusText = `起點：屋主開價 ${formatNum(askVal)} 萬、買方斡旋 ${formatNum(offerVal)} 萬（還差 ${formatNum(askVal - offerVal)} 萬）`;
     } else if (sCur === bCur) {
-      if (sCur === 2000) {
-        statusText = "成交！雙方在 2,000 萬握手";
+      if (sCur === targetVal) {
+        statusText = `成交！雙方在 ${formatNum(targetVal)} 萬握手`;
         statusClass = "alert-ok";
       } else {
-        statusText = `雙方在 ${formatNum(sCur)} 萬收斂（遊戲設定是 2,000）`;
+        statusText = `雙方在 ${formatNum(sCur)} 萬收斂（遊戲設定是 ${formatNum(targetVal)}）`;
         statusClass = "alert-warn";
       }
     } else if (sCur < bCur) {
@@ -916,7 +1020,9 @@
       connText.textContent = "單機模式";
     }
 
-    roomPill.textContent = state.joined && state.roomCode ? `房間：${state.roomCode}` : "房間：未加入";
+    const scTitle = CONTENT && CONTENT.shortTitle ? CONTENT.shortTitle : "景美三房";
+    roomPill.textContent =
+      (state.joined && state.roomCode ? `房間：${state.roomCode}` : "房間：未加入") + `｜劇本：${scTitle}`;
 
     const roleObj = ROLES.find((r) => r.id === state.role);
     const roleName = roleObj ? roleObj.short : "未選擇";
@@ -1012,13 +1118,17 @@
     });
 
     const shareUrl = state.roomCode
-      ? `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(state.roomCode)}`
-      : `${window.location.origin}${window.location.pathname}`;
+      ? `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(state.roomCode)}&scenario=${encodeURIComponent(state.scenario)}`
+      : `${window.location.origin}${window.location.pathname}?scenario=${encodeURIComponent(state.scenario)}`;
+
+    const scenarioList = ["jingmei", "banqiao", "zhongshan"]
+      .map((k) => SCENARIOS[k])
+      .filter(Boolean);
 
     return `
       <div class="page-header">
-        <h1>談判小房間｜房間設定</h1>
-        <span class="page-subtitle">免登入・輸入同組代碼即可多人連線同步</span>
+        <h1>談判小房間｜選擇劇本與進入房間</h1>
+        <span class="page-subtitle">免登入・可任選 3 套實戰斡旋劇本・輸入同組代碼即可多人連線同步</span>
       </div>
 
       ${
@@ -1034,7 +1144,35 @@
         .join("")}
 
       <div class="card">
-        <div class="card-title">1. 輸入組別代碼與你的角色</div>
+        <div class="card-title">
+          <span>1. 選擇要玩的遊戲劇本主題（點擊立即切換）</span>
+          <span style="font-size:0.84rem;color:var(--muted);">同房間成員會自動同步使用同一個劇本</span>
+        </div>
+        <div class="scenario-grid">
+          ${scenarioList
+            .map((sc) => {
+              const isSel = state.scenario === sc.id ? "selected" : "";
+              const ask = formatNum(sc.CASE.ask);
+              const offer = formatNum(sc.CASE.offer);
+              const target = formatNum(sc.CASE.target);
+              return `
+                <button type="button" class="scenario-card ${isSel}" data-scenario="${escapeHtml(sc.id)}">
+                  <div class="scenario-badge">${escapeHtml(sc.badge || "實戰劇本")}</div>
+                  <div class="scenario-title">${escapeHtml(sc.CASE.title)}</div>
+                  <div class="scenario-price">開價 ${ask} 萬 vs 斡旋 ${offer} 萬 → 目標 ${target} 萬</div>
+                  <div class="scenario-desc">
+                    <div><strong>屋主：</strong>${escapeHtml(sc.SELLER.who)}</div>
+                    <div><strong>買方：</strong>${escapeHtml(sc.BUYER.who)}</div>
+                  </div>
+                </button>
+              `;
+            })
+            .join("")}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">2. 輸入組別代碼與你的角色</div>
         <div class="form-grid" style="margin-bottom:14px;">
           <div>
             <label class="field-label" for="inp-room-code">組別代碼（英數 2–12 字，不分大小寫）</label>
@@ -1053,11 +1191,12 @@
               .filter((p) => p.online && p.role === r.id)
               .map((p) => p.nick);
             const selected = state.role === r.id ? "selected" : "";
+            const dispName = getRoleDisplayName(r.id);
             return `
               <button type="button" class="role-choice-btn ${selected}" data-role="${r.id}">
                 <div class="role-choice-top">
                   <span class="role-dot" style="background:${r.color}"></span>
-                  <span>${escapeHtml(r.name)}</span>
+                  <span>${escapeHtml(dispName)}</span>
                 </div>
                 <div class="role-choice-holders">
                   ${holders.length ? `目前：${escapeHtml(holders.join("、"))}` : "尚無人選擇"}
@@ -1081,7 +1220,7 @@
 
       <div class="card">
         <div class="card-title">
-          <span>2. 房間成員清單（${state.joined && state.roomCode ? `代碼：${escapeHtml(state.roomCode)}` : "尚未加入"}）</span>
+          <span>3. 房間成員清單（${state.joined && state.roomCode ? `代碼：${escapeHtml(state.roomCode)}` : "尚未加入"}）</span>
           <span style="font-size:0.85rem;color:var(--muted);">5 人一組・4 人時講師兼店長・3 人時一人兼兩邊仲介</span>
         </div>
         ${
@@ -1101,7 +1240,7 @@
                       const rObj = ROLES.find((r) => r.id === p.role) || ROLES[0];
                       return `
                         <tr>
-                          <td data-label="角色"><span class="role-badge ${rObj.colorClass}">${escapeHtml(rObj.name)}</span></td>
+                          <td data-label="角色"><span class="role-badge ${rObj.colorClass}">${escapeHtml(getRoleDisplayName(rObj.id))}</span></td>
                           <td data-label="暱稱"><strong>${escapeHtml(p.nick)}</strong> ${p.uid === state.uid ? "（你）" : ""}</td>
                           <td data-label="狀態">
                             <span class="status-dot ${p.online ? "online" : "offline"}" style="margin-right:5px;"></span>
@@ -1117,11 +1256,11 @@
       </div>
 
       <div class="card">
-        <div class="card-title">3. 分享房間連結與 QR Code</div>
+        <div class="card-title">4. 分享房間連結與 QR Code</div>
         <div class="share-box">
           <div class="qr-wrap" id="qr-container" aria-label="房間連結 QR Code"></div>
           <div style="flex:1;min-width:220px;">
-            <div class="field-label">同組邀請連結（打開自動帶入組別代碼）</div>
+            <div class="field-label">同組邀請連結（打開自動帶入組別代碼與劇本）</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
               <input type="text" id="inp-share-url" readonly value="${escapeHtml(shareUrl)}" style="flex:1;min-width:200px;background:#FFF;" />
               <button type="button" id="btn-copy-link" class="btn btn-primary">複製連結</button>
@@ -1139,6 +1278,13 @@
     const inpCode = document.getElementById("inp-room-code");
     const inpNick = document.getElementById("inp-nick");
     const msgEl = document.getElementById("room-msg");
+
+    document.querySelectorAll(".scenario-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        const scId = card.getAttribute("data-scenario");
+        setScenario(scId, true);
+      });
+    });
 
     document.querySelectorAll(".role-choice-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -1937,7 +2083,7 @@
                     <td data-label="數字（萬）">
                       <input type="number" class="inp-ladder-price" data-idx="${idx}" min="0" max="5000" step="10" ${
                         isTarget ? "readonly" : ""
-                      } value="${isTarget ? "2000" : escapeHtml(nRow.price)}" />
+                      } value="${isTarget ? getTargetPriceStr() : escapeHtml(nRow.price)}" />
                     </td>
                     <td data-label="柱子（勾選）與論述">
                       ${
@@ -2357,8 +2503,8 @@
         <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;background:var(--ok-bg);padding:14px;border-radius:10px;">
           <div style="min-width:180px;">
             <label class="field-label" for="inp-mgr-deal">成交價（萬）</label>
-            <input type="number" id="inp-mgr-deal" min="0" max="5000" step="10" placeholder="2000" value="${
-              dealVal !== null && dealVal !== undefined ? escapeHtml(dealVal) : "2000"
+            <input type="number" id="inp-mgr-deal" min="0" max="5000" step="10" placeholder="${getTargetPriceStr()}" value="${
+              dealVal !== null && dealVal !== undefined ? escapeHtml(dealVal) : getTargetPriceStr()
             }" />
           </div>
           <button type="button" id="btn-announce-deal" class="btn btn-primary">🎉 宣布成交（全組跳出橫幅）</button>
@@ -2444,7 +2590,11 @@
     const bd = getBoardSeries();
     const xLabels = ["起點", "第一輪", "第二輪", "最後一步"];
 
-    // 計算折線圖 SVG 座標（Y 軸範圍 1750 ~ 2250）
+    const askVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.ask) || 2200;
+    const offerVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.offer) || 1800;
+    const targetVal = (CONTENT && CONTENT.CASE && CONTENT.CASE.target) || 2000;
+
+    // 計算折線圖 SVG 座標（Y 軸範圍依劇本動態計算）
     const svgW = 720;
     const svgH = 300;
     const padL = 65;
@@ -2453,8 +2603,9 @@
     const padB = 45;
     const plotW = svgW - padL - padR;
     const plotH = svgH - padT - padB;
-    const minY = 1750;
-    const maxY = 2250;
+    const minY = offerVal - 50;
+    const maxY = askVal + 50;
+    const yTicks = [offerVal, offerVal + 100, targetVal, askVal - 100, askVal];
 
     const getX = (i) => padL + (plotW * i) / 3;
     const getY = (val) => {
@@ -2464,12 +2615,11 @@
 
     const sPoints = bd.sPrices.slice(0, bd.lastValidIdx + 1).map((p, i) => `${getX(i)},${getY(p)}`).join(" ");
     const bPoints = bd.bPrices.slice(0, bd.lastValidIdx + 1).map((p, i) => `${getX(i)},${getY(p)}`).join(" ");
-    const y2000 = getY(2000);
 
     return `
       <div class="page-header">
         <h1>📈 議價看板｜雙方價格收斂圖</h1>
-        <span class="page-subtitle">起點 2,200 vs 1,800 → 目標 2,000 萬握手</span>
+        <span class="page-subtitle">起點 ${formatNum(askVal)} vs ${formatNum(offerVal)} → 目標 ${formatNum(targetVal)} 萬握手</span>
       </div>
 
       <!-- 狀態列（7.2 節） -->
@@ -2484,16 +2634,16 @@
           <div style="display:flex;gap:14px;font-size:0.86rem;">
             <span><span class="role-dot" style="background:#9B2A1F"></span> 屋主開價／讓價</span>
             <span><span class="role-dot" style="background:#2F5D62"></span> 買方出價／加價</span>
-            <span style="color:var(--accent);">--- 2,000 萬目標線</span>
+            <span style="color:var(--accent);">--- ${formatNum(targetVal)} 萬目標線</span>
           </div>
         </div>
         <div class="chart-box">
           <svg viewBox="0 0 ${svgW} ${svgH}" class="chart-svg" role="img" aria-label="議價收斂折線圖">
             <!-- 水平網格線 -->
-            ${[1800, 1900, 2000, 2100, 2200]
+            ${yTicks
               .map((yVal) => {
                 const y = getY(yVal);
-                const isTarget = yVal === 2000;
+                const isTarget = yVal === targetVal;
                 return `
                   <line x1="${padL}" y1="${y}" x2="${svgW - padR}" y2="${y}"
                     stroke="${isTarget ? "#8B6A45" : "#E5DEC9"}"
@@ -2569,11 +2719,11 @@
           <tbody>
             <tr>
               <td data-label="輪次"><strong>起點</strong></td>
-              <td data-label="屋主數字（萬）"><strong class="num" style="color:var(--role-seller);">2,200</strong></td>
+              <td data-label="屋主數字（萬）"><strong class="num" style="color:var(--role-seller);">${formatNum(askVal)}</strong></td>
               <td data-label="屋主要換的條件">—</td>
-              <td data-label="買方數字（萬）"><strong class="num" style="color:var(--role-buyer);">1,800</strong></td>
+              <td data-label="買方數字（萬）"><strong class="num" style="color:var(--role-buyer);">${formatNum(offerVal)}</strong></td>
               <td data-label="買方要換的條件">—</td>
-              <td data-label="當輪差距"><strong class="num">400 萬</strong></td>
+              <td data-label="當輪差距"><strong class="num">${formatNum(askVal - offerVal)} 萬</strong></td>
             </tr>
             ${ROUND_LABELS.map((rLbl, idx) => {
               const sr = bd.sRounds[idx];
@@ -2663,8 +2813,9 @@
   // ==================== 5.7 共用工具（複製、下載列印版、清空重來） ====================
   function buildSummaryText() {
     const lines = [];
-    lines.push(`【談判小房間｜演練紀錄】`);
-    lines.push(`房間代碼：${state.roomCode || "單機"} ｜ 暱稱：${state.nick || "未填"} ｜ 角色：${state.role}`);
+    const scTitle = CONTENT && CONTENT.CASE && CONTENT.CASE.title ? CONTENT.CASE.title : "實戰斡旋";
+    lines.push(`【談判小房間｜${scTitle}｜演練紀錄】`);
+    lines.push(`房間代碼：${state.roomCode || "單機"} ｜ 劇本：${scTitle} ｜ 暱稱：${state.nick || "未填"} ｜ 角色：${state.role}`);
     lines.push("");
 
     ["seller", "buyer"].forEach((cKey) => {
@@ -2797,13 +2948,13 @@
     fetch("./content.json")
       .then((res) => res.json())
       .then((data) => {
-        CONTENT = data;
+        initScenarios(data);
         handleHashChange();
         initSyncEngine();
       })
       .catch((err) => {
         if (window.DEFAULT_CONTENT) {
-          CONTENT = window.DEFAULT_CONTENT;
+          initScenarios(window.DEFAULT_CONTENT);
           handleHashChange();
           initSyncEngine();
         } else {
