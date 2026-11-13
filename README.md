@@ -2,6 +2,9 @@
 
 > **未來仲介研究所｜房仲實戰學院・第四堂 PART 5 完整演練**  
 > 免登入、點開連結輸入組別代碼（例如 `a1`）即可 5 人同組即時同步演練。
+>
+> 🌐 **公開正式網址**：https://dennis76198.github.io/jingmei-negotiation-game/  
+> 🔗 **第 1 組快速進房連結範例**：https://dennis76198.github.io/jingmei-negotiation-game/?room=a1
 
 ---
 
