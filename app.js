@@ -6,11 +6,53 @@
   let SCENARIOS = {};
 
   const ROLES = [
-    { id: "seller", name: "屋主（林家）", short: "屋主", colorClass: "role-seller", color: "#9B2A1F" },
-    { id: "buyer", name: "買方（陳家）", short: "買方", colorClass: "role-buyer", color: "#2F5D62" },
-    { id: "sagent", name: "賣方仲介", short: "賣方仲介", colorClass: "role-sagent", color: "#8B6A45" },
-    { id: "bagent", name: "買方仲介", short: "買方仲介", colorClass: "role-bagent", color: "#5E6B34" },
-    { id: "manager", name: "店長／觀察員", short: "店長", colorClass: "role-manager", color: "#4A3B2E" }
+    { id: "seller", name: "屋主（林家）", short: "屋主", colorClass: "role-seller", color: "#9B2A1F", single: true },
+    { id: "buyer", name: "買方（陳家）", short: "買方", colorClass: "role-buyer", color: "#2F5D62", single: true },
+    { id: "sagent", name: "賣方仲介", short: "賣方仲介", colorClass: "role-sagent", color: "#8B6A45", single: true },
+    { id: "bagent", name: "買方仲介", short: "買方仲介", colorClass: "role-bagent", color: "#5E6B34", single: true },
+    { id: "manager", name: "店長（限 1 人）", short: "店長", colorClass: "role-manager", color: "#4A3B2E", single: true },
+    { id: "observer", name: "觀察者（不限人數）", short: "觀察者", colorClass: "role-observer", color: "#2B5B84", single: false }
+  ];
+
+  const OBSERVER_STAGES = [
+    {
+      key: "stage1",
+      title: "環節一｜識局訪談與情報交換",
+      placeholder: "觀察兩位仲介如何訪談客戶（有無問出 Must／Want／Give 與關鍵數字）、情報交換與找交集是否到位……"
+    },
+    {
+      key: "stage2",
+      title: "環節二｜第一輪議價與反應卡拆招",
+      placeholder: "觀察第一輪開口報價、柱子論述、客戶抽反應卡時的拆招表現與換到的條件……"
+    },
+    {
+      key: "stage3",
+      title: "環節三｜第二輪議價與收斂攻防",
+      placeholder: "觀察第二輪中繼報價、讓步幅度是否遞減、掛鉤句（If 條件句）運用情況……"
+    },
+    {
+      key: "stage4",
+      title: "環節四｜最後一步與店長斡旋",
+      placeholder: "觀察最後一步目標價收斂過程、店長下黑上白搭橋話術與成交關鍵……"
+    }
+  ];
+
+  const OBSERVER_FB_QUESTIONS = [
+    {
+      key: "fb1",
+      title: "1. 客戶回饋觀察：哪一句話讓客戶真的想讓步？",
+      placeholder: "記錄打動屋主或買方的關鍵一句話與原因"
+    },
+    {
+      key: "fb2",
+      title: "2. 條件交換觀察：哪一步有做到「換條件」？哪一步忘記換？",
+      placeholder: "記錄哪一輪條件換得好、哪一輪白白讓步"
+    },
+    {
+      key: "fb3",
+      title: "3. 總結建議：如果重來一次，哪一輪的話術可以更好？",
+      placeholder: "給這組業務夥伴的具體話術升級建議"
+    }
   ];
 
   function getRoleDisplayName(roleId) {
@@ -37,6 +79,7 @@
     { id: "sagent", label: "賣方仲介", dot: "#8B6A45" },
     { id: "bagent", label: "買方仲介", dot: "#5E6B34" },
     { id: "manager", label: "店長", dot: "#4A3B2E" },
+    { id: "observer", label: "觀察者", dot: "#2B5B84" },
     { id: "board", label: "議價看板" }
   ];
 
@@ -45,6 +88,11 @@
   const LS_SESSION_KEY = "jingmei_session_v1";
   const LS_NOTES_KEY = "jingmei_notes_v1";
   const LS_LOCAL_ROOMS_KEY = "jingmei_local_rooms_v1";
+
+  // 記錄已展開的子夾 ID，避免即時同步重繪時把使用者點開的子夾自動收合
+  const openSubfolderIds = new Set();
+  let lockToastTimer = null;
+  let lockToastMsg = "";
 
   // 狀態
   let state = {
@@ -67,6 +115,34 @@
   };
   state.roomData = createEmptyRoomData();
   state.notes = loadNotes();
+
+  function isGameEnded() {
+    const deal = state.roomData && state.roomData.manager ? state.roomData.manager.deal : null;
+    return deal !== null && deal !== undefined && deal !== "";
+  }
+
+  function canAccessTab(tabId) {
+    const publicTabs = ["room", "rules", "case", "board"];
+    if (publicTabs.includes(tabId)) return true;
+    if (isGameEnded()) return true;
+    if (state.role === "manager" || state.role === "observer") return true;
+    return tabId === state.role;
+  }
+
+  function showLockToast(msg) {
+    lockToastMsg = msg;
+    if (lockToastTimer) clearTimeout(lockToastTimer);
+    const toastEl = document.getElementById("lock-toast-banner");
+    if (toastEl) {
+      toastEl.textContent = msg;
+      toastEl.style.display = "flex";
+    }
+    lockToastTimer = setTimeout(() => {
+      lockToastMsg = "";
+      const el = document.getElementById("lock-toast-banner");
+      if (el) el.style.display = "none";
+    }, 4500);
+  }
 
   let db = null;
   let roomRef = null;
@@ -145,9 +221,10 @@
         buyer: createEmptyClientNode()
       },
       agents: {
-        sagent: { intel: "", offer: null, by: null },
-        bagent: { intel: "", offer: null, by: null }
-      }
+        sagent: { intel: "", offer: null, by: null, byNick: "", notes: null },
+        bagent: { intel: "", offer: null, by: null, byNick: "", notes: null }
+      },
+      observers: {}
     };
   }
 
@@ -182,6 +259,22 @@
     };
   }
 
+  function createDefaultObserverNotes() {
+    return {
+      s_checks: [false, false, false, false, false, false],
+      b_checks: [false, false, false, false, false, false],
+      stages: {
+        stage1: "",
+        stage2: "",
+        stage3: "",
+        stage4: ""
+      },
+      fb1: "",
+      fb2: "",
+      fb3: ""
+    };
+  }
+
   function createDefaultNotes() {
     return {
       sagent: createDefaultAgentNotes(),
@@ -189,11 +282,18 @@
       manager: {
         s_checks: [false, false, false, false, false, false],
         b_checks: [false, false, false, false, false, false],
+        stages: {
+          stage1: "",
+          stage2: "",
+          stage3: "",
+          stage4: ""
+        },
         dealNote: "",
         fb1: "",
         fb2: "",
         fb3: ""
       },
+      observer: createDefaultObserverNotes(),
       manualBoard: {
         seller: [
           { price: "", cond: "" },
@@ -222,6 +322,10 @@
       const parsed = JSON.parse(raw);
       const def = createDefaultNotes();
       const merged = Object.assign(def, parsed);
+      merged.manager = Object.assign(createDefaultNotes().manager, parsed.manager || {});
+      merged.manager.stages = Object.assign({ stage1: "", stage2: "", stage3: "", stage4: "" }, (parsed.manager && parsed.manager.stages) || {});
+      merged.observer = Object.assign(createDefaultObserverNotes(), parsed.observer || {});
+      merged.observer.stages = Object.assign({ stage1: "", stage2: "", stage3: "", stage4: "" }, (parsed.observer && parsed.observer.stages) || {});
       const targetStr = getTargetPriceStr();
       // 若舊版快取在「目標」欄有自動預填值且尚未填寫論述/條件，自動清空讓仲介自己手填
       ["sagent", "bagent"].forEach((aKey) => {
@@ -468,10 +572,30 @@
         base.agents[aKey] = {
           intel: src.intel ? String(src.intel) : "",
           offer: src.offer !== undefined && src.offer !== null && src.offer !== "" ? Number(src.offer) : null,
-          by: src.by || null
+          by: src.by || null,
+          byNick: src.byNick ? String(src.byNick) : "",
+          notes: src.notes && typeof src.notes === "object" ? Object.assign(createDefaultAgentNotes(), src.notes) : null
         };
       }
     });
+    if (raw.observers && typeof raw.observers === "object") {
+      Object.entries(raw.observers).forEach(([uKey, oVal]) => {
+        if (oVal && typeof oVal === "object") {
+          base.observers[uKey] = {
+            uid: oVal.uid || uKey,
+            nick: oVal.nick ? String(oVal.nick) : "觀察者",
+            role: oVal.role || "observer",
+            updatedAt: Number(oVal.updatedAt || 0),
+            s_checks: Array.isArray(oVal.s_checks) ? oVal.s_checks.map(Boolean) : [false, false, false, false, false, false],
+            b_checks: Array.isArray(oVal.b_checks) ? oVal.b_checks.map(Boolean) : [false, false, false, false, false, false],
+            stages: Object.assign({ stage1: "", stage2: "", stage3: "", stage4: "" }, oVal.stages || {}),
+            fb1: oVal.fb1 ? String(oVal.fb1) : "",
+            fb2: oVal.fb2 ? String(oVal.fb2) : "",
+            fb3: oVal.fb3 ? String(oVal.fb3) : ""
+          };
+        }
+      });
+    }
     return base;
   }
 
@@ -666,8 +790,21 @@
   }
 
   // 寫入房間部分節點
-  function writeRoomPatch(pathAfterRoom, value) {
-    if (!state.roomCode) return;
+  function writeRoomPatch(pathAfterRoom, value, skipRender) {
+    if (!state.roomCode) {
+      // 尚未加入房間時，仍同步更新本機 state.roomData 結構以便立即預覽
+      const parts = pathAfterRoom.split("/");
+      let cur = state.roomData;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!cur[parts[i]] || typeof cur[parts[i]] !== "object") {
+          cur[parts[i]] = {};
+        }
+        cur = cur[parts[i]];
+      }
+      cur[parts[parts.length - 1]] = value;
+      if (!skipRender) renderAll();
+      return;
+    }
     if (state.firebaseReady && db && state.joined) {
       db.ref(`rooms/${state.roomCode}/${pathAfterRoom}`).set(value);
       db.ref(`rooms/${state.roomCode}/meta/updatedAt`).set(firebase.database.ServerValue.TIMESTAMP);
@@ -684,7 +821,46 @@
       }
       cur[parts[parts.length - 1]] = value;
       if (state.joined) saveLocalRoom(state.roomCode);
-      renderAll();
+      if (!skipRender) renderAll();
+    }
+  }
+
+  function syncAgentNotesToRoom(agentKey) {
+    if (state.role !== agentKey && state.joined) return;
+    const notes = state.notes[agentKey];
+    writeRoomPatch(`agents/${agentKey}/notes`, notes, true);
+    if (state.nick) {
+      writeRoomPatch(`agents/${agentKey}/byNick`, state.nick, true);
+    }
+  }
+
+  function getMyLoginNick() {
+    if (state.nick && state.nick.trim()) return state.nick.trim();
+    const p = state.roomData && state.roomData.players && state.roomData.players[state.uid];
+    if (p && p.nick && p.nick.trim()) return p.nick.trim();
+    return "未命名學員";
+  }
+
+  function syncMyObserverRecord(sourceKey, skipRender) {
+    const src = state.notes[sourceKey] || createDefaultObserverNotes();
+    const payload = {
+      uid: state.uid || "local_user",
+      nick: getMyLoginNick(),
+      role: sourceKey === "manager" ? "manager" : "observer",
+      updatedAt: Date.now(),
+      s_checks: Array.isArray(src.s_checks) ? src.s_checks.map(Boolean) : [false, false, false, false, false, false],
+      b_checks: Array.isArray(src.b_checks) ? src.b_checks.map(Boolean) : [false, false, false, false, false, false],
+      stages: Object.assign({ stage1: "", stage2: "", stage3: "", stage4: "" }, src.stages || {}),
+      fb1: String(src.fb1 || ""),
+      fb2: String(src.fb2 || ""),
+      fb3: String(src.fb3 || "")
+    };
+    const uidKey = (state.uid || "local_user") + (sourceKey === "manager" ? "_mgr" : "_obs");
+    writeRoomPatch(`observers/${uidKey}`, payload, skipRender);
+    const boardBox = document.getElementById("synced-observers-board");
+    if (boardBox) {
+      boardBox.innerHTML = renderSyncedObserversBoardInner();
+      bindSubfolderStateEvents();
     }
   }
 
@@ -737,9 +913,9 @@
   }
 
   // 7.1 仲介價格階梯檢查
-  function checkAgentLadder(agentKey) {
+  function checkAgentLadder(agentKey, customNotes) {
     const isUp = agentKey === "sagent";
-    const notes = state.notes[agentKey];
+    const notes = customNotes || state.notes[agentKey];
     const rows = notes.ladder; // [開口, 中繼, 目標, 底線/上限推估]
     const openVal = sanitizePrice(rows[0].price);
     const midVal = sanitizePrice(rows[1].price);
@@ -1000,11 +1176,68 @@
 
   // ==================== 畫面渲染 ====================
 
+  function captureActiveInputState() {
+    const el = document.activeElement;
+    const container = document.getElementById("app-view");
+    if (!el || !container || !container.contains(el)) return null;
+    if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") return null;
+    return {
+      id: el.id || "",
+      cls: el.className || "",
+      idx: el.getAttribute("data-idx"),
+      stage: el.getAttribute("data-stage"),
+      fb: el.getAttribute("data-fb"),
+      val: el.value,
+      selStart: typeof el.selectionStart === "number" ? el.selectionStart : null,
+      selEnd: typeof el.selectionEnd === "number" ? el.selectionEnd : null
+    };
+  }
+
+  function restoreActiveInputState(snap) {
+    if (!snap) return;
+    const container = document.getElementById("app-view");
+    if (!container) return;
+    let target = null;
+    if (snap.id) {
+      target = document.getElementById(snap.id);
+    } else {
+      const candidates = container.querySelectorAll("input, textarea");
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[i];
+        if (
+          c.className === snap.cls &&
+          c.getAttribute("data-idx") === snap.idx &&
+          c.getAttribute("data-stage") === snap.stage &&
+          c.getAttribute("data-fb") === snap.fb
+        ) {
+          target = c;
+          break;
+        }
+      }
+    }
+    if (target) {
+      target.focus();
+      try {
+        if (snap.selStart !== null && snap.selEnd !== null && typeof target.setSelectionRange === "function") {
+          target.setSelectionRange(snap.selStart, snap.selEnd);
+        }
+      } catch (e) {}
+    }
+  }
+
   function renderAll() {
     if (!CONTENT) return;
+    if (!canAccessTab(state.tab)) {
+      state.tab = canAccessTab(state.role) ? state.role : "room";
+      try {
+        history.replaceState(null, "", `#${state.tab}`);
+      } catch (e) {}
+    }
+    const focusSnap = captureActiveInputState();
     renderStatusBar();
     renderNavTabs();
     renderActiveTab();
+    restoreActiveInputState(focusSnap);
   }
 
   function renderStatusBar() {
@@ -1050,7 +1283,7 @@
     const dealPrice = state.roomData.manager && state.roomData.manager.deal;
     if (dealPrice !== null && dealPrice !== undefined && dealPrice !== "") {
       dealBanner.className = "deal-banner active";
-      dealBanner.textContent = `🎉 店長宣布：${formatNum(dealPrice)} 萬成交！`;
+      dealBanner.textContent = `🎉 店長宣布：${formatNum(dealPrice)} 萬成交！（遊戲結束，已開放全體成員查看所有角色細節與回饋）`;
     } else {
       dealBanner.className = "deal-banner";
       dealBanner.textContent = "";
@@ -1061,52 +1294,112 @@
     const nav = document.getElementById("nav-tabs");
     nav.innerHTML = TABS.map((t) => {
       const active = state.tab === t.id ? "active" : "";
+      const allowed = canAccessTab(t.id);
+      const lockedCls = allowed ? "" : "locked";
+      const lockIcon = allowed ? "" : `<span class="lock-icon" aria-hidden="true">🔒</span>`;
       const dotHtml = t.dot ? `<span class="role-dot" style="background:${t.dot}"></span>` : "";
-      return `<a href="#${t.id}" class="nav-tab ${active}" data-tab="${t.id}">${dotHtml}${escapeHtml(t.label)}</a>`;
+      const titleAttr = allowed
+        ? ""
+        : `title="遊戲進行中僅能查看自己的角色，待店長按下「宣布成交」後開放查看所有角色細節"`;
+      return `<a href="#${t.id}" class="nav-tab ${active} ${lockedCls}" data-tab="${t.id}" data-allowed="${allowed ? "1" : "0"}" ${titleAttr}>${dotHtml}${lockIcon}${escapeHtml(t.label)}</a>`;
     }).join("");
+
+    nav.querySelectorAll(".nav-tab").forEach((link) => {
+      link.addEventListener("click", (e) => {
+        const tabId = link.getAttribute("data-tab");
+        if (!canAccessTab(tabId)) {
+          e.preventDefault();
+          const roleObj = ROLES.find((r) => r.id === state.role);
+          const myRoleName = roleObj ? roleObj.short : state.role;
+          showLockToast(
+            `🔒 遊戲進行中，除「店長」與「觀察者」外，你（${myRoleName}）目前只能查看自己的頁籤；待店長按下「宣布成交」結束遊戲後，即可查看所有人的細節！`
+          );
+        }
+      });
+    });
   }
 
   function renderActiveTab() {
     const container = document.getElementById("app-view");
+    let pageHtml = "";
     switch (state.tab) {
       case "room":
-        container.innerHTML = renderRoomPage();
-        bindRoomEvents();
+        pageHtml = renderRoomPage();
         break;
       case "rules":
-        container.innerHTML = renderRulesPage();
+        pageHtml = renderRulesPage();
         break;
       case "case":
-        container.innerHTML = renderCasePage();
+        pageHtml = renderCasePage();
         break;
       case "seller":
-        container.innerHTML = renderClientPage("seller");
+        pageHtml = renderClientPage("seller");
+        break;
+      case "buyer":
+        pageHtml = renderClientPage("buyer");
+        break;
+      case "sagent":
+        pageHtml = renderAgentPage("sagent");
+        break;
+      case "bagent":
+        pageHtml = renderAgentPage("bagent");
+        break;
+      case "manager":
+        pageHtml = renderManagerPage();
+        break;
+      case "observer":
+        pageHtml = renderObserverPage();
+        break;
+      case "board":
+        pageHtml = renderBoardPage();
+        break;
+      default:
+        pageHtml = renderRoomPage();
+    }
+
+    const toastBannerHtml = `<div id="lock-toast-banner" class="alert alert-secret" style="display:${
+      lockToastMsg ? "flex" : "none"
+    };">${escapeHtml(lockToastMsg)}</div>`;
+
+    container.innerHTML = toastBannerHtml + pageHtml;
+
+    switch (state.tab) {
+      case "room":
+        bindRoomEvents();
+        break;
+      case "seller":
         bindClientEvents("seller");
         break;
       case "buyer":
-        container.innerHTML = renderClientPage("buyer");
         bindClientEvents("buyer");
         break;
       case "sagent":
-        container.innerHTML = renderAgentPage("sagent");
         bindAgentEvents("sagent");
         break;
       case "bagent":
-        container.innerHTML = renderAgentPage("bagent");
         bindAgentEvents("bagent");
         break;
       case "manager":
-        container.innerHTML = renderManagerPage();
         bindManagerEvents();
         break;
+      case "observer":
+        bindObserverEvents();
+        break;
       case "board":
-        container.innerHTML = renderBoardPage();
         bindBoardEvents();
         break;
-      default:
-        container.innerHTML = renderRoomPage();
-        bindRoomEvents();
     }
+    bindSubfolderStateEvents();
+  }
+
+  function bindSubfolderStateEvents() {
+    document.querySelectorAll("details.obs-subfolder[data-folder-id]").forEach((det) => {
+      const fId = det.getAttribute("data-folder-id");
+      det.addEventListener("toggle", () => {
+        if (det.open) openSubfolderIds.add(fId);
+        else openSubfolderIds.delete(fId);
+      });
+    });
   }
 
   // ==================== 5.1 房間頁 ====================
@@ -1119,12 +1412,15 @@
       online: !!p.online
     }));
 
-    // 檢查重複在線角色
+    // 檢查重複在線角色（觀察者 single: false 不限人數，店長與其他角色限 1 人）
     const duplicateWarnings = [];
     ROLES.forEach((r) => {
+      if (r.single === false) return;
       const holders = playersList.filter((p) => p.online && p.role === r.id);
       if (holders.length >= 2) {
-        duplicateWarnings.push(`${r.short}有兩個人選，請其中一位換角色`);
+        duplicateWarnings.push(
+          `${r.short}只能有一位（目前有：${holders.map((h) => h.nick).join("、")}），請其中一位換角色或改選「觀察者」`
+        );
       }
     });
 
@@ -1532,7 +1828,9 @@
     const C = isSeller ? CONTENT.SELLER : CONTENT.BUYER;
     const reacts = isSeller ? CONTENT.SELLER_REACT : CONTENT.BUYER_REACT;
     const roleLabel = isSeller ? "屋主" : "買方";
-    const revealed = isSeller ? state.revealSellerRole : state.revealBuyerRole;
+    const canPeekAll = state.role === "manager" || state.role === "observer" || isGameEnded();
+    const rawReveal = isSeller ? state.revealSellerRole : state.revealBuyerRole;
+    const revealed = canPeekAll ? rawReveal !== "force_hide" : !!rawReveal;
     const curRound = state.clientRoundView[clientKey] || 0;
     const managerRound = state.roomData.manager ? Number(state.roomData.manager.round || 0) : 0;
 
@@ -1553,14 +1851,25 @@
         ? reacts[activeCardIdx]
         : null;
 
-    const wrongRoleWarning =
-      state.role !== clientKey
-        ? `<div class="alert alert-secret">
-            <span>🔒 這一頁是${roleLabel}的秘密，請不要偷看（你目前的角色是：${escapeHtml(
-              (ROLES.find((r) => r.id === state.role) || {}).name || ""
-            )}）</span>
-          </div>`
-        : "";
+    let wrongRoleWarning = "";
+    if (state.role !== clientKey) {
+      if (isGameEnded()) {
+        wrongRoleWarning = `<div class="alert alert-ok">
+          <span>🎉 <strong>店長已宣布成交（遊戲結束）！</strong>目前已開放全體成員查看${roleLabel}的秘密角色卡與各輪細節。</span>
+        </div>`;
+      } else if (state.role === "manager" || state.role === "observer") {
+        const viewerTitle = state.role === "manager" ? "店長" : "觀察者";
+        wrongRoleWarning = `<div class="alert alert-info">
+          <span>👁️ 你目前以「<strong>${viewerTitle}（${escapeHtml(getMyLoginNick())}）</strong>」全場視角檢視${roleLabel}的秘密角色卡與各輪細節。</span>
+        </div>`;
+      } else {
+        wrongRoleWarning = `<div class="alert alert-secret">
+          <span>🔒 這一頁是${roleLabel}的秘密，請不要偷看（你目前的角色是：${escapeHtml(
+            (ROLES.find((r) => r.id === state.role) || {}).name || ""
+          )}）</span>
+        </div>`;
+      }
+    }
 
     const roundDiffBanner =
       managerRound !== curRound
@@ -1781,9 +2090,15 @@
 
   function bindClientEvents(clientKey) {
     const isSeller = clientKey === "seller";
+    const canPeekAll = state.role === "manager" || state.role === "observer" || isGameEnded();
     const toggleCard = () => {
-      if (isSeller) state.revealSellerRole = !state.revealSellerRole;
-      else state.revealBuyerRole = !state.revealBuyerRole;
+      if (canPeekAll) {
+        if (isSeller) state.revealSellerRole = state.revealSellerRole === "force_hide" ? true : "force_hide";
+        else state.revealBuyerRole = state.revealBuyerRole === "force_hide" ? true : "force_hide";
+      } else {
+        if (isSeller) state.revealSellerRole = !state.revealSellerRole;
+        else state.revealBuyerRole = !state.revealBuyerRole;
+      }
       renderAll();
     };
 
@@ -1901,8 +2216,28 @@
     const cNode = state.roomData.clients[clientKey];
     const mySync = state.roomData.agents[agentKey] || { intel: "", offer: null };
     const otherSync = state.roomData.agents[otherAgentKey] || { intel: "", offer: null };
-    const notes = state.notes[agentKey];
-    const checks = checkAgentLadder(agentKey);
+    const isMyAgentRole = state.role === agentKey || !state.joined;
+    const syncedAgentNotes = state.roomData.agents[agentKey] && state.roomData.agents[agentKey].notes;
+    const notes = !isMyAgentRole && syncedAgentNotes ? syncedAgentNotes : state.notes[agentKey];
+    const agentHolderNick = (state.roomData.agents[agentKey] && state.roomData.agents[agentKey].byNick) || "";
+    const checks = checkAgentLadder(agentKey, notes);
+
+    const viewerBanner =
+      state.role !== agentKey
+        ? `<div class="alert ${isGameEnded() ? "alert-ok" : "alert-info"}">
+            <span>${
+              isGameEnded()
+                ? `🎉 <strong>店長已宣布成交（遊戲結束）！</strong>目前已開放全體成員檢視 <strong>${escapeHtml(A.name)}${
+                    agentHolderNick ? `（${escapeHtml(agentHolderNick)}）` : ""
+                  }</strong> 的完整筆記與價格階梯。`
+                : `👁️ 你目前以「<strong>${state.role === "manager" ? "店長" : "觀察者"}（${escapeHtml(
+                    getMyLoginNick()
+                  )}）</strong>」視角即時檢視 <strong>${escapeHtml(A.name)}${
+                    agentHolderNick ? `（${escapeHtml(agentHolderNick)}）` : ""
+                  }</strong> 的筆記與價格階梯。`
+            }</span>
+          </div>`
+        : "";
 
     return `
       <div class="page-header">
@@ -1912,6 +2247,8 @@
         </h1>
         <span class="page-subtitle">${escapeHtml(A.intro)}</span>
       </div>
+
+      ${viewerBanner}
 
       <div class="alert alert-info">
         <span>📌 <strong>仲介實戰任務：</strong>本案開價 <strong>${formatNum(CONTENT.CASE.ask)} 萬</strong> vs 買方斡旋 <strong>${formatNum(CONTENT.CASE.offer)} 萬</strong>。請透過「識局探索」問出客戶的真實數字與條件，並與另一位仲介交換情報後，在下方「價格階梯」<strong>自行推算並手填你的「目標成交價」</strong>！</span>
@@ -2005,7 +2342,7 @@
 
       <!-- 仲介卡①：識局探索 + 交換情報 + 看出交集 -->
       <div class="card">
-        <div class="card-title">🔍 識局探索（只存在你的裝置，不同步）</div>
+        <div class="card-title">🔍 識局探索（店長、觀察者與遊戲結束後全體成員可同步檢視）</div>
         <div class="form-grid">
           ${A.explore
             .map(
@@ -2226,6 +2563,7 @@
           notes.logs[rIdx].cond = String(cRound.cond);
         }
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
         renderAll();
       });
     });
@@ -2237,7 +2575,9 @@
       writeRoomPatch(`agents/${agentKey}`, {
         offer: sanitizePrice(inpOffer.value),
         intel: String(inpIntel.value || "").slice(0, 300),
-        by: state.uid
+        by: state.uid,
+        byNick: getMyLoginNick(),
+        notes: state.notes[agentKey]
       });
     };
     document.getElementById("btn-send-agent-sync").addEventListener("click", doSyncAgent);
@@ -2250,6 +2590,7 @@
         const idx = Number(chk.getAttribute("data-idx"));
         notes.tasks[idx] = chk.checked;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
 
@@ -2259,6 +2600,7 @@
         const idx = Number(inp.getAttribute("data-idx"));
         notes.explore[idx] = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
 
@@ -2268,6 +2610,7 @@
         const idx = Number(inp.getAttribute("data-idx"));
         notes.intel[idx] = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
 
@@ -2276,24 +2619,28 @@
       inp.addEventListener("input", () => {
         notes.cross[Number(inp.getAttribute("data-idx"))].care = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
     document.querySelectorAll(".inp-cross-give").forEach((inp) => {
       inp.addEventListener("input", () => {
         notes.cross[Number(inp.getAttribute("data-idx"))].give = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
     document.querySelectorAll(".inp-cross-hook").forEach((inp) => {
       inp.addEventListener("input", () => {
         notes.cross[Number(inp.getAttribute("data-idx"))].hook = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
 
     // 價格階梯與即時重算檢查
     const refreshLadderChecks = () => {
       saveNotes();
+      syncAgentNotesToRoom(agentKey);
       const checks = checkAgentLadder(agentKey);
       const box = document.getElementById("agent-ladder-checks");
       if (box) {
@@ -2348,6 +2695,7 @@
       inp.addEventListener("input", () => {
         notes.ladder[Number(inp.getAttribute("data-idx"))].next = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
 
@@ -2356,75 +2704,78 @@
       inp.addEventListener("input", () => {
         notes.logs[Number(inp.getAttribute("data-idx"))].card = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
     document.querySelectorAll(".inp-log-price").forEach((inp) => {
       inp.addEventListener("input", () => {
         notes.logs[Number(inp.getAttribute("data-idx"))].price = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
     document.querySelectorAll(".inp-log-reply").forEach((inp) => {
       inp.addEventListener("input", () => {
         notes.logs[Number(inp.getAttribute("data-idx"))].reply = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
     document.querySelectorAll(".inp-log-cond").forEach((inp) => {
       inp.addEventListener("input", () => {
         notes.logs[Number(inp.getAttribute("data-idx"))].cond = inp.value;
         saveNotes();
+        syncAgentNotesToRoom(agentKey);
       });
     });
   }
 
-  // ==================== 5.5 店長頁 ====================
-  function renderManagerPage() {
-    const M = CONTENT.MANAGER;
-    const mRound = state.roomData.manager ? Number(state.roomData.manager.round || 0) : 0;
-    const dealVal = state.roomData.manager && state.roomData.manager.deal;
+  // ==================== 5.5 店長頁 ＆ 觀察者頁 ＆ 具名回饋同步子夾系統 ====================
+  function renderFullCardForViewer(clientKey, cardIdx) {
+    const reacts = clientKey === "seller" ? CONTENT.SELLER_REACT : CONTENT.BUYER_REACT;
+    const label = clientKey === "seller" ? "屋主反應卡" : "買方反應卡";
+    if (cardIdx === null || cardIdx === undefined || !reacts[cardIdx]) {
+      return `<span style="color:var(--muted);">尚未抽卡</span>`;
+    }
+    const c = reacts[cardIdx];
+    const no = String(cardIdx + 1).padStart(2, "0");
+    return `
+      <div><strong>${label} ${no}：${escapeHtml(c[0])}</strong></div>
+      <div style="font-size:0.84rem;color:var(--muted);">🎭 怎麼演：${escapeHtml(c[1])}</div>
+      <div style="font-size:0.84rem;">🔑 仲介要做到：${escapeHtml(c[2])}</div>
+      <div style="font-size:0.84rem;color:var(--ok-text);">✅ 做到 → ${escapeHtml(c[3])} ｜ ❌ 沒做到 → ${escapeHtml(c[4])}</div>
+    `;
+  }
+
+  function renderQuickRolePeekBar(viewerRoleTitle) {
+    return `
+      <div class="card" style="background:#FFF9F2;border-color:var(--accent);">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;">
+          <div>
+            <strong>🔓 ${escapeHtml(viewerRoleTitle)}全場視角權限：</strong>
+            <span style="font-size:0.9rem;color:var(--muted);">可隨時切換查看所有角色的秘密字卡、識局筆記與價格階梯</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;">
+            <a href="#seller" class="btn btn-sm"><span class="role-dot" style="background:#9B2A1F"></span> 看屋主秘密卡</a>
+            <a href="#buyer" class="btn btn-sm"><span class="role-dot" style="background:#2F5D62"></span> 看買方秘密卡</a>
+            <a href="#sagent" class="btn btn-sm"><span class="role-dot" style="background:#8B6A45"></span> 看賣方仲介筆記</a>
+            <a href="#bagent" class="btn btn-sm"><span class="role-dot" style="background:#5E6B34"></span> 看買方仲介筆記</a>
+            <a href="#board" class="btn btn-sm">📈 看議價看板</a>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderLiveTableCard() {
     const sClient = state.roomData.clients.seller;
     const bClient = state.roomData.clients.buyer;
     const sAgent = state.roomData.agents.sagent || { intel: "", offer: null };
     const bAgent = state.roomData.agents.bagent || { intel: "", offer: null };
-    const mNotes = state.notes.manager;
-
-    const renderFullCardForManager = (clientKey, cardIdx) => {
-      const reacts = clientKey === "seller" ? CONTENT.SELLER_REACT : CONTENT.BUYER_REACT;
-      const label = clientKey === "seller" ? "屋主反應卡" : "買方反應卡";
-      if (cardIdx === null || cardIdx === undefined || !reacts[cardIdx]) {
-        return `<span style="color:var(--muted);">尚未抽卡</span>`;
-      }
-      const c = reacts[cardIdx];
-      const no = String(cardIdx + 1).padStart(2, "0");
-      return `
-        <div><strong>${label} ${no}：${escapeHtml(c[0])}</strong></div>
-        <div style="font-size:0.84rem;color:var(--muted);">🎭 怎麼演：${escapeHtml(c[1])}</div>
-        <div style="font-size:0.84rem;">🔑 仲介要做到：${escapeHtml(c[2])}</div>
-        <div style="font-size:0.84rem;color:var(--ok-text);">✅ 做到 → ${escapeHtml(c[3])} ｜ ❌ 沒做到 → ${escapeHtml(c[4])}</div>
-      `;
-    };
 
     return `
-      <div class="page-header">
-        <h1><span class="role-badge role-manager">店長／觀察員</span> 全場控台與觀察表</h1>
-        <div class="round-tabs">
-          ${ROUND_LABELS.map(
-            (lbl, idx) => `
-            <button type="button" class="round-btn btn-manager-round ${mRound === idx ? "active" : ""}" data-round="${idx}">
-              切換至：${escapeHtml(lbl)}
-            </button>`
-          ).join("")}
-        </div>
-      </div>
-
-      <div class="alert alert-info">
-        <span>🎯 <strong>店長字卡專屬提示｜本劇本目標成交價：${formatNum(CONTENT.CASE.target)} 萬</strong>（屋主真正底線與買方真正上限皆涵蓋此目標價，兩輪後差距 40 萬內請出面完成最後一步）</span>
-      </div>
-
-      <!-- 即時牌桌（店長看得到兩邊完整反應卡內容） -->
       <div class="card">
-        <div class="card-title">👀 即時牌桌（全組同步・店長可看完整反應卡）</div>
+        <div class="card-title">👀 即時牌桌（全組同步・可看雙方完整反應卡與仲介傳話）</div>
         <table class="resp-table" style="margin-bottom:14px;">
           <thead>
             <tr>
@@ -2445,14 +2796,14 @@
                       <strong>數字：${sr.price !== null && sr.price !== undefined ? formatNum(sr.price) + " 萬" : "—"}</strong>
                       ｜ 條件：${escapeHtml(sr.cond || "—")}
                     </div>
-                    ${renderFullCardForManager("seller", sr.card)}
+                    ${renderFullCardForViewer("seller", sr.card)}
                   </td>
                   <td data-label="買方">
                     <div style="margin-bottom:6px;">
                       <strong>數字：${br.price !== null && br.price !== undefined ? formatNum(br.price) + " 萬" : "—"}</strong>
                       ｜ 條件：${escapeHtml(br.cond || "—")}
                     </div>
-                    ${renderFullCardForManager("buyer", br.card)}
+                    ${renderFullCardForViewer("buyer", br.card)}
                   </td>
                 </tr>
               `;
@@ -2471,10 +2822,278 @@
           </div>
         </div>
       </div>
+    `;
+  }
 
-      <!-- 做到就打勾（兩組各 6 項） -->
+  function getCollectedObserversList() {
+    const obsMap = Object.assign({}, (state.roomData && state.roomData.observers) || {});
+    const playersMap = (state.roomData && state.roomData.players) || {};
+
+    // 整理並確保署名使用玩家在房間登入的名字
+    const list = Object.entries(obsMap)
+      .map(([key, item]) => {
+        if (!item || typeof item !== "object") return null;
+        const rawUid = item.uid || key.replace(/_(obs|mgr)$/, "");
+        const pNode = playersMap[rawUid];
+        const loginNick = (pNode && pNode.nick) || item.nick || "匿名觀察者";
+        const sChecks = Array.isArray(item.s_checks) ? item.s_checks.map(Boolean) : [false, false, false, false, false, false];
+        const bChecks = Array.isArray(item.b_checks) ? item.b_checks.map(Boolean) : [false, false, false, false, false, false];
+        const stages = Object.assign({ stage1: "", stage2: "", stage3: "", stage4: "" }, item.stages || {});
+        const fb1 = String(item.fb1 || "").trim();
+        const fb2 = String(item.fb2 || "").trim();
+        const fb3 = String(item.fb3 || "").trim();
+        const hasAnyCheck = sChecks.some(Boolean) || bChecks.some(Boolean);
+        const hasAnyStage = Object.values(stages).some((v) => String(v || "").trim().length > 0);
+        const hasAnyFb = !!(fb1 || fb2 || fb3);
+        if (!hasAnyCheck && !hasAnyStage && !hasAnyFb) return null;
+        return {
+          key,
+          uid: rawUid,
+          nick: loginNick,
+          role: item.role === "manager" ? "manager" : "observer",
+          updatedAt: Number(item.updatedAt || 0),
+          s_checks: sChecks,
+          b_checks: bChecks,
+          stages,
+          fb1,
+          fb2,
+          fb3
+        };
+      })
+      .filter(Boolean);
+
+    list.sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+    return list;
+  }
+
+  function renderCollapsibleFeedList(items, folderId, itemLabel) {
+    if (!items || items.length === 0) {
+      return `<div style="color:var(--muted);font-size:0.88rem;padding:6px 0;">尚無觀察者填寫此項回饋</div>`;
+    }
+
+    const renderSingleItem = (it, idx) => {
+      const roleBadgeCls = it.role === "manager" ? "role-manager" : "role-observer";
+      const roleTitle = it.role === "manager" ? "店長" : "觀察者";
+      return `
+        <div class="obs-feed-item">
+          <div class="obs-feed-head">
+            <span class="obs-sig-badge ${roleBadgeCls}">✍️ 署名：${escapeHtml(it.nick)}（${roleTitle}）</span>
+            <span style="font-size:0.78rem;color:var(--muted);">#${idx + 1}</span>
+          </div>
+          <div class="obs-feed-text">${escapeHtml(it.text)}</div>
+        </div>
+      `;
+    };
+
+    const visibleItems = items.slice(0, 3);
+    const hiddenItems = items.slice(3);
+
+    let html = `<div class="obs-feed-list">${visibleItems.map((it, i) => renderSingleItem(it, i)).join("")}</div>`;
+
+    if (hiddenItems.length > 0) {
+      const isOpen = openSubfolderIds.has(folderId) ? "open" : "";
+      const extraAuthors = hiddenItems.map((h) => h.nick).join("、");
+      html += `
+        <details class="obs-subfolder" data-folder-id="${escapeHtml(folderId)}" ${isOpen}>
+          <summary class="obs-subfolder-summary">
+            <span>📂 超過 3 則回饋，已收起更多${escapeHtml(itemLabel)}（另有 <strong>${hiddenItems.length}</strong> 則｜署名：${escapeHtml(
+        extraAuthors
+      )}）</span>
+            <span class="obs-subfolder-toggle-tip">點開查看內容 ▾</span>
+          </summary>
+          <div class="obs-subfolder-body">
+            ${hiddenItems.map((it, i) => renderSingleItem(it, i + 3)).join("")}
+          </div>
+        </details>
+      `;
+    }
+
+    return html;
+  }
+
+  function renderSyncedObserversBoardInner() {
+    const obsList = getCollectedObserversList();
+    const M = CONTENT.MANAGER;
+
+    const renderObserverCard = (obs, idx) => {
+      const roleBadgeCls = obs.role === "manager" ? "role-manager" : "role-observer";
+      const roleTitle = obs.role === "manager" ? "店長" : "觀察者";
+      const sCount = obs.s_checks.filter(Boolean).length;
+      const bCount = obs.b_checks.filter(Boolean).length;
+      const sDoneNames = M.s_checks.filter((_, i) => obs.s_checks[i]);
+      const bDoneNames = M.b_checks.filter((_, i) => obs.b_checks[i]);
+
+      return `
+        <div class="obs-person-card">
+          <div class="obs-person-head">
+            <span class="obs-sig-badge ${roleBadgeCls}">👤 署名：${escapeHtml(obs.nick)}（${roleTitle}）</span>
+            <span style="font-size:0.84rem;font-weight:700;color:var(--text);">
+              賣方仲介做到 <strong>${sCount}/6</strong> 項 ｜ 買方仲介做到 <strong>${bCount}/6</strong> 項
+            </span>
+          </div>
+          ${
+            sDoneNames.length > 0 || bDoneNames.length > 0
+              ? `<div style="font-size:0.84rem;color:var(--muted);margin-top:6px;">
+                  ${sDoneNames.length > 0 ? `<div><strong>賣方仲介已做到：</strong>${escapeHtml(sDoneNames.join("、"))}</div>` : ""}
+                  ${bDoneNames.length > 0 ? `<div><strong>買方仲介已做到：</strong>${escapeHtml(bDoneNames.join("、"))}</div>` : ""}
+                </div>`
+              : ""
+          }
+        </div>
+      `;
+    };
+
+    const visibleCards = obsList.slice(0, 3);
+    const hiddenCards = obsList.slice(3);
+    const cardsFolderId = "obs_person_cards_extra";
+    const cardsOpen = openSubfolderIds.has(cardsFolderId) ? "open" : "";
+
+    return `
       <div class="card">
-        <div class="card-title">☑️ 觀察檢核表（做到就打勾）</div>
+        <div class="card-title">
+          <span>📋 全場觀察者＆店長回饋即時同步看板（具名署名・超過 3 則自動子夾收起）</span>
+          <span style="font-size:0.84rem;color:var(--muted);">目前已有 ${obsList.length} 位觀察者／店長同步填寫</span>
+        </div>
+
+        <!-- 一、各環節觀察到的事情（4 個環節） -->
+        <h3 style="font-size:1.02rem;margin:8px 0 10px;color:var(--dark-band);">🔎 一、各環節觀察紀錄（同步具名彙整）</h3>
+        <div class="obs-stage-board-grid" style="margin-bottom:18px;">
+          ${OBSERVER_STAGES.map((st) => {
+            const entries = obsList
+              .map((o) => ({
+                nick: o.nick,
+                role: o.role,
+                text: String((o.stages && o.stages[st.key]) || "").trim()
+              }))
+              .filter((x) => x.text.length > 0);
+            return `
+              <div class="obs-stage-group">
+                <div class="obs-stage-group-title">
+                  <span>${escapeHtml(st.title)}</span>
+                  <span class="obs-count-pill">${entries.length} 則回饋</span>
+                </div>
+                ${renderCollapsibleFeedList(entries, `stage_${st.key}`, "環節觀察")}
+              </div>
+            `;
+          }).join("")}
+        </div>
+
+        <!-- 二、遊戲結束時的收尾回饋三題 -->
+        <h3 style="font-size:1.02rem;margin:16px 0 10px;color:var(--dark-band);">💬 二、結束時的收尾回饋問題（同步具名彙整）</h3>
+        <div class="obs-stage-board-grid" style="margin-bottom:18px;">
+          ${OBSERVER_FB_QUESTIONS.map((q) => {
+            const entries = obsList
+              .map((o) => ({
+                nick: o.nick,
+                role: o.role,
+                text: String(o[q.key] || "").trim()
+              }))
+              .filter((x) => x.text.length > 0);
+            return `
+              <div class="obs-stage-group">
+                <div class="obs-stage-group-title">
+                  <span>${escapeHtml(q.title)}</span>
+                  <span class="obs-count-pill">${entries.length} 則回饋</span>
+                </div>
+                ${renderCollapsibleFeedList(entries, `fb_${q.key}`, "收尾回饋")}
+              </div>
+            `;
+          }).join("")}
+        </div>
+
+        <!-- 三、觀察者檢核打勾統計（超過 3 人同樣子夾收起） -->
+        <h3 style="font-size:1.02rem;margin:16px 0 10px;color:var(--dark-band);">☑️ 三、各觀察者檢核表打勾彙整</h3>
+        ${
+          obsList.length === 0
+            ? `<div style="color:var(--muted);font-size:0.9rem;">目前尚無觀察者或店長勾選檢核表或輸入回饋。</div>`
+            : `
+              <div class="obs-feed-list">
+                ${visibleCards.map((o, i) => renderObserverCard(o, i)).join("")}
+              </div>
+              ${
+                hiddenCards.length > 0
+                  ? `<details class="obs-subfolder" data-folder-id="${cardsFolderId}" ${cardsOpen}>
+                      <summary class="obs-subfolder-summary">
+                        <span>📂 超過 3 位觀察者檢核紀錄，已收起更多檢核卡（另有 <strong>${hiddenCards.length}</strong> 位｜署名：${escapeHtml(
+                      hiddenCards.map((h) => h.nick).join("、")
+                    )}）</span>
+                        <span class="obs-subfolder-toggle-tip">點開查看內容 ▾</span>
+                      </summary>
+                      <div class="obs-subfolder-body">
+                        ${hiddenCards.map((o, i) => renderObserverCard(o, i + 3)).join("")}
+                      </div>
+                    </details>`
+                  : ""
+              }
+            `
+        }
+      </div>
+    `;
+  }
+
+  function renderManagerPage() {
+    const M = CONTENT.MANAGER;
+    const mRound = state.roomData.manager ? Number(state.roomData.manager.round || 0) : 0;
+    const dealVal = state.roomData.manager && state.roomData.manager.deal;
+    const mNotes = state.notes.manager;
+
+    return `
+      <div class="page-header">
+        <h1><span class="role-badge role-manager">店長（限 1 人）</span> 全場控台與宣布成交</h1>
+        <div class="round-tabs">
+          ${ROUND_LABELS.map(
+            (lbl, idx) => `
+            <button type="button" class="round-btn btn-manager-round ${mRound === idx ? "active" : ""}" data-round="${idx}">
+              切換至：${escapeHtml(lbl)}
+            </button>`
+          ).join("")}
+        </div>
+      </div>
+
+      <div class="alert alert-info">
+        <span>🎯 <strong>店長字卡專屬提示｜本劇本目標成交價：${formatNum(CONTENT.CASE.target)} 萬</strong>（屋主真正底線與買方真正上限皆涵蓋此目標價，兩輪後差距 40 萬內請出面完成最後一步；按下「宣布成交」後將開放所有人查看全部角色細節！）</span>
+      </div>
+
+      ${renderQuickRolePeekBar("店長")}
+      ${renderLiveTableCard()}
+
+      <!-- 最後一步台詞範例 + 宣布成交 -->
+      <div class="card">
+        <div class="card-title">🏆 最後一步：店長出面（下黑上白）＆ 宣布成交（解鎖全體視角）</div>
+        <div class="form-grid" style="margin-bottom:16px;">
+          ${M.final
+            .map(
+              (f) => `
+            <div style="background:var(--light-bg);padding:12px;border-radius:8px;">
+              <strong>${escapeHtml(f[0])}台詞範例：</strong>
+              <div style="margin-top:4px;">${escapeHtml(f[1])}</div>
+            </div>`
+            )
+            .join("")}
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;background:var(--ok-bg);padding:14px;border-radius:10px;">
+          <div style="min-width:180px;">
+            <label class="field-label" for="inp-mgr-deal">成交價（萬）</label>
+            <input type="number" id="inp-mgr-deal" min="0" max="5000" step="10" placeholder="${getTargetPriceStr()}" value="${
+              dealVal !== null && dealVal !== undefined ? escapeHtml(dealVal) : getTargetPriceStr()
+            }" />
+          </div>
+          <button type="button" id="btn-announce-deal" class="btn btn-primary">🎉 宣布成交（全組跳出橫幅＋開放所有人看全部角色細節）</button>
+          ${
+            dealVal !== null && dealVal !== undefined
+              ? `<button type="button" id="btn-clear-deal" class="btn">收回成交狀態（恢復角色鎖定）</button>`
+              : ""
+          }
+        </div>
+      </div>
+
+      <!-- 店長自己的檢核表、各環節觀察與收尾回饋（也會具名同步至全場回饋看板） -->
+      <div class="card">
+        <div class="card-title">
+          <span>☑️ 店長觀察檢核表（做到就打勾）</span>
+          <span class="obs-sig-badge role-manager">✍️ 署名：${escapeHtml(getMyLoginNick())}（店長）</span>
+        </div>
         <div class="form-grid">
           <div>
             <h3 style="font-size:0.96rem;margin-bottom:8px;"><span class="role-badge role-sagent">賣方仲介 6 項</span></h3>
@@ -2507,54 +3126,44 @@
         </div>
       </div>
 
-      <!-- 最後一步台詞範例 + 宣布成交 -->
       <div class="card">
-        <div class="card-title">🏆 最後一步：店長出面（下黑上白）＆ 宣布成交</div>
-        <div class="form-grid" style="margin-bottom:16px;">
-          ${M.final
-            .map(
-              (f) => `
-            <div style="background:var(--light-bg);padding:12px;border-radius:8px;">
-              <strong>${escapeHtml(f[0])}台詞範例：</strong>
-              <div style="margin-top:4px;">${escapeHtml(f[1])}</div>
-            </div>`
-            )
-            .join("")}
+        <div class="card-title">
+          <span>🔎 店長各環節觀察筆記（即時具名同步至網頁）</span>
+          <span style="font-size:0.84rem;color:var(--muted);">署名：${escapeHtml(getMyLoginNick())}</span>
         </div>
-
-        <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;background:var(--ok-bg);padding:14px;border-radius:10px;">
-          <div style="min-width:180px;">
-            <label class="field-label" for="inp-mgr-deal">成交價（萬）</label>
-            <input type="number" id="inp-mgr-deal" min="0" max="5000" step="10" placeholder="${getTargetPriceStr()}" value="${
-              dealVal !== null && dealVal !== undefined ? escapeHtml(dealVal) : getTargetPriceStr()
-            }" />
-          </div>
-          <button type="button" id="btn-announce-deal" class="btn btn-primary">🎉 宣布成交（全組跳出橫幅）</button>
-          ${
-            dealVal !== null && dealVal !== undefined
-              ? `<button type="button" id="btn-clear-deal" class="btn">收回成交橫幅</button>`
-              : ""
-          }
+        <div class="form-grid">
+          ${OBSERVER_STAGES.map(
+            (st) => `
+            <div>
+              <label class="field-label">${escapeHtml(st.title)}</label>
+              <textarea class="inp-mgr-stage" data-stage="${st.key}" placeholder="${escapeHtml(st.placeholder)}">${escapeHtml(
+              (mNotes.stages && mNotes.stages[st.key]) || ""
+            )}</textarea>
+            </div>`
+          ).join("")}
         </div>
       </div>
 
-      <!-- 收尾回饋三題 -->
       <div class="card">
-        <div class="card-title">💬 收尾回饋三題（10 分鐘）</div>
-        <div class="form-grid">
-          <div>
-            <label class="field-label">1. 客戶回饋：哪一句話讓你真的想讓步？</label>
-            <textarea id="inp-mgr-fb1" placeholder="記錄屋主與買方的感受">${escapeHtml(mNotes.fb1 || "")}</textarea>
-          </div>
-          <div>
-            <label class="field-label">2. 哪一步有做到「換條件」？哪一步忘記換？</label>
-            <textarea id="inp-mgr-fb2" placeholder="記錄關鍵轉折">${escapeHtml(mNotes.fb2 || "")}</textarea>
-          </div>
-          <div>
-            <label class="field-label">3. 如果重來一次，哪一輪的話術可以更好？</label>
-            <textarea id="inp-mgr-fb3" placeholder="店長總結建議">${escapeHtml(mNotes.fb3 || "")}</textarea>
-          </div>
+        <div class="card-title">
+          <span>💬 店長收尾回饋三題（10 分鐘・即時具名同步至網頁）</span>
+          <span style="font-size:0.84rem;color:var(--muted);">署名：${escapeHtml(getMyLoginNick())}</span>
         </div>
+        <div class="form-grid">
+          ${OBSERVER_FB_QUESTIONS.map(
+            (q) => `
+            <div>
+              <label class="field-label">${escapeHtml(q.title)}</label>
+              <textarea id="inp-mgr-${q.key}" data-fb="${q.key}" placeholder="${escapeHtml(q.placeholder)}">${escapeHtml(
+              mNotes[q.key] || ""
+            )}</textarea>
+            </div>`
+          ).join("")}
+        </div>
+      </div>
+
+      <div id="synced-observers-board">
+        ${renderSyncedObserversBoardInner()}
       </div>
     `;
   }
@@ -2572,12 +3181,24 @@
       chk.addEventListener("change", () => {
         state.notes.manager.s_checks[Number(chk.getAttribute("data-idx"))] = chk.checked;
         saveNotes();
+        syncMyObserverRecord("manager", true);
       });
     });
     document.querySelectorAll(".chk-mgr-b").forEach((chk) => {
       chk.addEventListener("change", () => {
         state.notes.manager.b_checks[Number(chk.getAttribute("data-idx"))] = chk.checked;
         saveNotes();
+        syncMyObserverRecord("manager", true);
+      });
+    });
+
+    document.querySelectorAll(".inp-mgr-stage").forEach((el) => {
+      el.addEventListener("input", () => {
+        const sKey = el.getAttribute("data-stage");
+        if (!state.notes.manager.stages) state.notes.manager.stages = { stage1: "", stage2: "", stage3: "", stage4: "" };
+        state.notes.manager.stages[sKey] = el.value;
+        saveNotes();
+        syncMyObserverRecord("manager", true);
       });
     });
 
@@ -2602,8 +3223,155 @@
         el.addEventListener("input", () => {
           state.notes.manager[k] = el.value;
           saveNotes();
+          syncMyObserverRecord("manager", true);
         });
       }
+    });
+  }
+
+  // ==================== 5.5b 觀察者專頁（不限人數・各環節觀察＋結束回饋具名同步） ====================
+  function renderObserverPage() {
+    const M = CONTENT.MANAGER;
+    const oNotes = state.notes.observer || createDefaultObserverNotes();
+    const myNick = getMyLoginNick();
+
+    return `
+      <div class="page-header">
+        <h1><span class="role-badge role-observer">觀察者（不限人數）</span> 各環節觀察與收尾回饋</h1>
+        <span class="obs-sig-badge role-observer">✍️ 你的回饋將自動署名：${escapeHtml(myNick)}</span>
+      </div>
+
+      <div class="alert alert-info">
+        <span>👁️ <strong>觀察者專屬說明：</strong>觀察者人數不限，你可以隨時點選上方頁籤檢視屋主、買方、買賣仲介與店長的所有細節。你在下方填寫的「每個環節觀察」與「結束回饋問題」都會<strong>自動加上你的登入暱稱（${escapeHtml(
+          myNick
+        )}）即時同步在網頁中</strong>；若同一題或同一環節超過 3 則回饋，第 4 則起會自動收合進子夾，點開即可查看！</span>
+      </div>
+
+      ${renderQuickRolePeekBar("觀察者")}
+      ${renderLiveTableCard()}
+
+      <!-- 1. 觀察檢核表（做到就打勾） -->
+      <div class="card">
+        <div class="card-title">
+          <span>☑️ 1. 觀察檢核表（做到就打勾・自動同步）</span>
+          <span class="obs-sig-badge role-observer">✍️ 署名：${escapeHtml(myNick)}</span>
+        </div>
+        <div class="form-grid">
+          <div>
+            <h3 style="font-size:0.96rem;margin-bottom:8px;"><span class="role-badge role-sagent">賣方仲介 6 項</span></h3>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              ${M.s_checks
+                .map(
+                  (c, i) => `
+                <label class="task-check-label">
+                  <input type="checkbox" class="chk-obs-s" data-idx="${i}" ${oNotes.s_checks[i] ? "checked" : ""} />
+                  <span>${escapeHtml(c)}</span>
+                </label>`
+                )
+                .join("")}
+            </div>
+          </div>
+          <div>
+            <h3 style="font-size:0.96rem;margin-bottom:8px;"><span class="role-badge role-bagent">買方仲介 6 項</span></h3>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              ${M.b_checks
+                .map(
+                  (c, i) => `
+                <label class="task-check-label">
+                  <input type="checkbox" class="chk-obs-b" data-idx="${i}" ${oNotes.b_checks[i] ? "checked" : ""} />
+                  <span>${escapeHtml(c)}</span>
+                </label>`
+                )
+                .join("")}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. 每個環節觀察到的事情 -->
+      <div class="card">
+        <div class="card-title">
+          <span>🔎 2. 每個環節你觀察到的事情（輸入即同步・具名：${escapeHtml(myNick)}）</span>
+          <span style="font-size:0.84rem;color:var(--muted);">超過 3 人填寫時將自動收合至子夾</span>
+        </div>
+        <div class="form-grid">
+          ${OBSERVER_STAGES.map(
+            (st) => `
+            <div>
+              <label class="field-label">${escapeHtml(st.title)}</label>
+              <textarea class="inp-obs-stage" data-stage="${st.key}" placeholder="${escapeHtml(st.placeholder)}">${escapeHtml(
+              (oNotes.stages && oNotes.stages[st.key]) || ""
+            )}</textarea>
+            </div>`
+          ).join("")}
+        </div>
+      </div>
+
+      <!-- 3. 結束時的回饋問題 -->
+      <div class="card">
+        <div class="card-title">
+          <span>💬 3. 遊戲結束時的回饋問題（輸入即同步・具名：${escapeHtml(myNick)}）</span>
+          <span style="font-size:0.84rem;color:var(--muted);">超過 3 人填寫時將自動收合至子夾</span>
+        </div>
+        <div class="form-grid">
+          ${OBSERVER_FB_QUESTIONS.map(
+            (q) => `
+            <div>
+              <label class="field-label">${escapeHtml(q.title)}</label>
+              <textarea class="inp-obs-fb" data-fb="${q.key}" placeholder="${escapeHtml(q.placeholder)}">${escapeHtml(
+              oNotes[q.key] || ""
+            )}</textarea>
+            </div>`
+          ).join("")}
+        </div>
+      </div>
+
+      <!-- 4. 全場觀察者＆店長回饋同步看板 -->
+      <div id="synced-observers-board">
+        ${renderSyncedObserversBoardInner()}
+      </div>
+    `;
+  }
+
+  function bindObserverEvents() {
+    if (!state.notes.observer) {
+      state.notes.observer = createDefaultObserverNotes();
+    }
+    const oNotes = state.notes.observer;
+
+    document.querySelectorAll(".chk-obs-s").forEach((chk) => {
+      chk.addEventListener("change", () => {
+        oNotes.s_checks[Number(chk.getAttribute("data-idx"))] = chk.checked;
+        saveNotes();
+        syncMyObserverRecord("observer", true);
+      });
+    });
+
+    document.querySelectorAll(".chk-obs-b").forEach((chk) => {
+      chk.addEventListener("change", () => {
+        oNotes.b_checks[Number(chk.getAttribute("data-idx"))] = chk.checked;
+        saveNotes();
+        syncMyObserverRecord("observer", true);
+      });
+    });
+
+    document.querySelectorAll(".inp-obs-stage").forEach((el) => {
+      el.addEventListener("input", () => {
+        const sKey = el.getAttribute("data-stage");
+        if (!oNotes.stages) oNotes.stages = { stage1: "", stage2: "", stage3: "", stage4: "" };
+        oNotes.stages[sKey] = el.value;
+        saveNotes();
+        syncMyObserverRecord("observer", true);
+      });
+    });
+
+    document.querySelectorAll(".inp-obs-fb").forEach((el) => {
+      el.addEventListener("input", () => {
+        const fKey = el.getAttribute("data-fb");
+        oNotes[fKey] = el.value;
+        saveNotes();
+        syncMyObserverRecord("observer", true);
+      });
     });
   }
 
@@ -2795,6 +3563,16 @@
           </tbody>
         </table>
       </div>
+
+      ${
+        isGameEnded() || state.role === "manager" || state.role === "observer"
+          ? renderQuickRolePeekBar(isGameEnded() ? "成交結束・全體" : state.role === "manager" ? "店長" : "觀察者")
+          : ""
+      }
+
+      <div id="synced-observers-board">
+        ${renderSyncedObserversBoardInner()}
+      </div>
     `;
   }
 
@@ -2866,6 +3644,24 @@
       lines.push("");
     });
 
+    const obsList = getCollectedObserversList();
+    if (obsList.length > 0) {
+      lines.push("■ 觀察者與店長具名回饋：");
+      obsList.forEach((o) => {
+        const roleTitle = o.role === "manager" ? "店長" : "觀察者";
+        lines.push(`  【署名：${o.nick}（${roleTitle}）】`);
+        OBSERVER_STAGES.forEach((st) => {
+          const txt = o.stages && o.stages[st.key];
+          if (txt) lines.push(`    - ${st.title}：${txt}`);
+        });
+        OBSERVER_FB_QUESTIONS.forEach((q) => {
+          const txt = o[q.key];
+          if (txt) lines.push(`    - ${q.title}：${txt}`);
+        });
+      });
+      lines.push("");
+    }
+
     return lines.join("\n");
   }
 
@@ -2936,9 +3732,10 @@
       if (state.roomCode) {
         writeRoomPatch("clients/seller", createEmptyClientNode());
         writeRoomPatch("clients/buyer", createEmptyClientNode());
-        writeRoomPatch("agents/sagent", { intel: "", offer: null, by: null });
-        writeRoomPatch("agents/bagent", { intel: "", offer: null, by: null });
+        writeRoomPatch("agents/sagent", { intel: "", offer: null, by: null, byNick: "", notes: null });
+        writeRoomPatch("agents/bagent", { intel: "", offer: null, by: null, byNick: "", notes: null });
         writeRoomPatch("manager", { round: 0, deal: null, by: null });
+        writeRoomPatch("observers", {});
       } else {
         state.roomData = createEmptyRoomData();
       }
@@ -2950,6 +3747,20 @@
   function handleHashChange() {
     const rawHash = (window.location.hash || "#room").replace(/^#/, "");
     const validTab = TABS.some((t) => t.id === rawHash) ? rawHash : "room";
+    if (!canAccessTab(validTab)) {
+      const roleObj = ROLES.find((r) => r.id === state.role);
+      const myRoleName = roleObj ? roleObj.short : state.role;
+      showLockToast(
+        `🔒 遊戲進行中，除「店長」與「觀察者」外，你（${myRoleName}）目前只能查看自己的頁籤；待店長按下「宣布成交」結束遊戲後，即可查看所有人的細節！`
+      );
+      const fallbackTab = canAccessTab(state.tab) ? state.tab : canAccessTab(state.role) ? state.role : "room";
+      state.tab = fallbackTab;
+      try {
+        history.replaceState(null, "", `#${fallbackTab}`);
+      } catch (e) {}
+      renderAll();
+      return;
+    }
     if (state.tab !== validTab) {
       // 切換分頁自動蓋回秘密角色卡（第 5.3 節）
       state.revealSellerRole = false;
