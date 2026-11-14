@@ -109,6 +109,10 @@
     revealBuyerRole: false,
     clientRoundView: { seller: 0, buyer: 0 },
     previewCardIdx: { seller: null, buyer: null },
+    agentDraft: {
+      sagent: { offer: "", intel: "", currentDraftId: null },
+      bagent: { offer: "", intel: "", currentDraftId: null }
+    },
     resetConfirmUntil: 0,
     roomData: null,
     notes: null
@@ -144,9 +148,12 @@
       };
     });
     const missingRoles = coreRoles.filter((r) => !r.ready).map((r) => r.short);
+    const readyCount = coreRoles.filter((r) => r.ready).length;
     return {
       coreRoles,
       missingRoles,
+      readyCount,
+      totalRequired: coreRoles.length,
       allReady: missingRoles.length === 0
     };
   }
@@ -241,18 +248,32 @@
     };
   }
 
+  function createEmptyAgentNode() {
+    return {
+      intel: "",
+      offer: null,
+      draftIntel: "",
+      draftOffer: "",
+      history: [],
+      by: null,
+      byNick: "",
+      notes: null,
+      notesUpdatedAt: 0
+    };
+  }
+
   function createEmptyRoomData() {
     return {
-      meta: { createdAt: Date.now(), updatedAt: Date.now(), scenario: state ? state.scenario || "jingmei" : "jingmei" },
+      meta: { createdAt: Date.now(), updatedAt: Date.now(), resetId: 0, scenario: state ? state.scenario || "jingmei" : "jingmei" },
       players: {},
-      manager: { started: false, round: 0, deal: null, by: null },
+      manager: { started: false, round: 0, deal: null, by: null, updatedAt: 0 },
       clients: {
         seller: createEmptyClientNode(),
         buyer: createEmptyClientNode()
       },
       agents: {
-        sagent: { intel: "", offer: null, by: null, byNick: "", notes: null },
-        bagent: { intel: "", offer: null, by: null, byNick: "", notes: null }
+        sagent: createEmptyAgentNode(),
+        bagent: createEmptyAgentNode()
       },
       observers: {}
     };
@@ -551,6 +572,131 @@
     }
   }
 
+  function normalizeAgentHistoryList(rawHist, fallbackOffer, fallbackIntel, fallbackNick) {
+    const arr = Array.isArray(rawHist)
+      ? rawHist
+      : rawHist && typeof rawHist === "object"
+      ? Object.values(rawHist)
+      : [];
+    const seenIds = new Set();
+    const list = [];
+    arr.forEach((h, idx) => {
+      if (!h || typeof h !== "object") return;
+      const offerNum = h.offer !== undefined && h.offer !== null && h.offer !== "" ? Number(h.offer) : null;
+      const intelStr = h.intel ? String(h.intel).trim() : "";
+      if (offerNum === null && !intelStr) return;
+      const id = String(h.id || `msg_${h.ts || idx}_${idx}`);
+      if (seenIds.has(id)) return;
+      seenIds.add(id);
+      const rIdx = h.round !== undefined && h.round !== null ? Number(h.round) : 0;
+      list.push({
+        id,
+        round: rIdx,
+        roundLabel: String(h.roundLabel || ROUND_LABELS[rIdx] || "第一輪"),
+        offer: offerNum,
+        intel: intelStr,
+        byNick: h.byNick ? String(h.byNick) : fallbackNick || "",
+        ts: Number(h.ts || 0)
+      });
+    });
+
+    // 若舊格式或單筆欄位有值且尚未存在於 history，自動補入確保不遺失
+    const fbOffer = fallbackOffer !== undefined && fallbackOffer !== null && fallbackOffer !== "" ? Number(fallbackOffer) : null;
+    const fbIntel = fallbackIntel ? String(fallbackIntel).trim() : "";
+    if (fbOffer !== null || fbIntel) {
+      const alreadyExists = list.some(
+        (item) =>
+          (fbOffer === null || item.offer === fbOffer) &&
+          (!fbIntel || item.intel === fbIntel)
+      );
+      if (!alreadyExists) {
+        list.push({
+          id: `legacy_${fbOffer !== null ? fbOffer : "no"}_${fbIntel.slice(0, 16)}`,
+          round: 0,
+          roundLabel: "已傳送",
+          offer: fbOffer,
+          intel: fbIntel,
+          byNick: fallbackNick || "",
+          ts: 1
+        });
+      }
+    }
+
+    list.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    return list;
+  }
+
+  function hasAnyAgentNotesContent(notes) {
+    if (!notes || typeof notes !== "object") return false;
+    if (Array.isArray(notes.tasks) && notes.tasks.some(Boolean)) return true;
+    if (Array.isArray(notes.explore) && notes.explore.some((x) => String(x || "").trim().length > 0)) return true;
+    if (Array.isArray(notes.intel) && notes.intel.some((x) => String(x || "").trim().length > 0)) return true;
+    if (Array.isArray(notes.cross) && notes.cross.some((c) => c && (c.care || c.give || c.hook))) return true;
+    if (
+      Array.isArray(notes.ladder) &&
+      notes.ladder.some((l) => l && (l.price || l.arg || l.cond || l.next || (Array.isArray(l.pillars) && l.pillars.length > 0)))
+    ) {
+      return true;
+    }
+    if (Array.isArray(notes.logs) && notes.logs.some((lg) => lg && (lg.card || lg.price || lg.reply || lg.cond))) return true;
+    return false;
+  }
+
+  function mergeAgentNotesObjects(primaryNotes, fallbackNotes) {
+    const base = createDefaultAgentNotes();
+    const p = primaryNotes && typeof primaryNotes === "object" ? primaryNotes : null;
+    const f = fallbackNotes && typeof fallbackNotes === "object" ? fallbackNotes : null;
+    if (!p && !f) return null;
+    if (p && !f) return Object.assign(base, p);
+    if (!p && f) return Object.assign(base, f);
+
+    const out = createDefaultAgentNotes();
+    out.tasks = [0, 1, 2, 3, 4, 5].map((i) => !!((p.tasks && p.tasks[i]) || (f.tasks && f.tasks[i])));
+    out.explore = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => {
+      const pv = p.explore && p.explore[i] ? String(p.explore[i]) : "";
+      const fv = f.explore && f.explore[i] ? String(f.explore[i]) : "";
+      return pv || fv;
+    });
+    out.intel = [0, 1, 2].map((i) => {
+      const pv = p.intel && p.intel[i] ? String(p.intel[i]) : "";
+      const fv = f.intel && f.intel[i] ? String(f.intel[i]) : "";
+      return pv || fv;
+    });
+    out.cross = [0, 1, 2].map((i) => {
+      const pc = (p.cross && p.cross[i]) || {};
+      const fc = (f.cross && f.cross[i]) || {};
+      return {
+        care: String(pc.care || fc.care || ""),
+        give: String(pc.give || fc.give || ""),
+        hook: String(pc.hook || fc.hook || "")
+      };
+    });
+    out.ladder = [0, 1, 2, 3].map((i) => {
+      const pl = (p.ladder && p.ladder[i]) || {};
+      const fl = (f.ladder && f.ladder[i]) || {};
+      const pPillars = Array.isArray(pl.pillars) ? pl.pillars : [];
+      const fPillars = Array.isArray(fl.pillars) ? fl.pillars : [];
+      return {
+        price: String(pl.price || fl.price || ""),
+        pillars: pPillars.length > 0 ? pPillars : fPillars,
+        arg: String(pl.arg || fl.arg || ""),
+        cond: String(pl.cond || fl.cond || ""),
+        next: String(pl.next || fl.next || "")
+      };
+    });
+    out.logs = [0, 1, 2].map((i) => {
+      const pg = (p.logs && p.logs[i]) || {};
+      const fg = (f.logs && f.logs[i]) || {};
+      return {
+        card: String(pg.card || fg.card || ""),
+        price: String(pg.price || fg.price || ""),
+        reply: String(pg.reply || fg.reply || ""),
+        cond: String(pg.cond || fg.cond || "")
+      };
+    });
+    return out;
+  }
+
   function normalizeRoomData(raw) {
     const base = createEmptyRoomData();
     if (!raw || typeof raw !== "object") return base;
@@ -570,7 +716,8 @@
         started: !!(raw.manager.started || dealNum !== null),
         round: raw.manager.round !== undefined && raw.manager.round !== null ? Number(raw.manager.round) : 0,
         deal: dealNum,
-        by: raw.manager.by || null
+        by: raw.manager.by || null,
+        updatedAt: Number(raw.manager.updatedAt || 0)
       };
     }
     ["seller", "buyer"].forEach((cKey) => {
@@ -590,7 +737,6 @@
           const drawn = Array.isArray(src.deck.drawn) ? src.deck.drawn.map(Number) : [];
           let left = Array.isArray(src.deck.left) ? src.deck.left.map(Number) : null;
           if (!left) {
-            // 若 Firebase 因空陣列移除 left，依 drawn 推算是否抽完或全新
             left = drawn.length > 0 ? [0, 1, 2, 3, 4, 5, 6, 7].filter((x) => !drawn.includes(x)) : [0, 1, 2, 3, 4, 5, 6, 7];
           }
           base.clients[cKey].deck = { left, drawn };
@@ -601,12 +747,26 @@
     ["sagent", "bagent"].forEach((aKey) => {
       const src = raw.agents && raw.agents[aKey];
       if (src) {
+        const byNick = src.byNick ? String(src.byNick) : "";
+        const rawOffer = src.offer !== undefined && src.offer !== null && src.offer !== "" ? Number(src.offer) : null;
+        const rawIntel = src.intel ? String(src.intel) : "";
+        const history = normalizeAgentHistoryList(src.history, rawOffer, rawIntel, byNick);
+        let latestOffer = rawOffer;
+        let latestIntel = rawIntel;
+        for (let i = history.length - 1; i >= 0; i--) {
+          if (latestOffer === null && history[i].offer !== null) latestOffer = history[i].offer;
+          if (!latestIntel && history[i].intel) latestIntel = history[i].intel;
+        }
         base.agents[aKey] = {
-          intel: src.intel ? String(src.intel) : "",
-          offer: src.offer !== undefined && src.offer !== null && src.offer !== "" ? Number(src.offer) : null,
+          intel: latestIntel,
+          offer: latestOffer,
+          draftIntel: src.draftIntel ? String(src.draftIntel) : "",
+          draftOffer: src.draftOffer !== undefined && src.draftOffer !== null ? String(src.draftOffer) : "",
+          history,
           by: src.by || null,
-          byNick: src.byNick ? String(src.byNick) : "",
-          notes: src.notes && typeof src.notes === "object" ? Object.assign(createDefaultAgentNotes(), src.notes) : null
+          byNick,
+          notes: src.notes && typeof src.notes === "object" ? mergeAgentNotesObjects(src.notes, null) : null,
+          notesUpdatedAt: Number(src.notesUpdatedAt || 0)
         };
       }
     });
@@ -631,6 +791,140 @@
     return base;
   }
 
+  // 合併兩份房間資料：確保遊戲中左邊出現過的仲介傳話與各角色填寫內容絕不被新進房間裝置覆蓋或刪除
+  function mergeRoomData(curRaw, incRaw) {
+    const cur = normalizeRoomData(curRaw);
+    const inc = normalizeRoomData(incRaw);
+    const curReset = Number((cur.meta && cur.meta.resetId) || 0);
+    const incReset = Number((inc.meta && inc.meta.resetId) || 0);
+    if (incReset > curReset) return inc;
+    if (curReset > incReset) return cur;
+
+    const out = createEmptyRoomData();
+    const curTime = Number((cur.meta && cur.meta.updatedAt) || 0);
+    const incTime = Number((inc.meta && inc.meta.updatedAt) || 0);
+    out.meta = {
+      createdAt: Math.min(cur.meta.createdAt || Date.now(), inc.meta.createdAt || Date.now()),
+      updatedAt: Math.max(curTime, incTime),
+      resetId: curReset,
+      scenario: incTime >= curTime ? inc.meta.scenario || cur.meta.scenario : cur.meta.scenario || inc.meta.scenario
+    };
+
+    // 合併 players
+    const allPlayerIds = new Set([...Object.keys(cur.players || {}), ...Object.keys(inc.players || {})]);
+    allPlayerIds.forEach((uid) => {
+      const cp = cur.players && cur.players[uid];
+      const ip = inc.players && inc.players[uid];
+      if (cp && ip) {
+        out.players[uid] = Number(ip.lastSeen || 0) >= Number(cp.lastSeen || 0) ? ip : cp;
+      } else {
+        out.players[uid] = ip || cp;
+      }
+    });
+
+    // 合併 manager
+    const cm = cur.manager || {};
+    const im = inc.manager || {};
+    if (Number(im.updatedAt || 0) > Number(cm.updatedAt || 0)) {
+      out.manager = Object.assign({}, im);
+    } else if (Number(cm.updatedAt || 0) > Number(im.updatedAt || 0)) {
+      out.manager = Object.assign({}, cm);
+    } else {
+      const mergedDeal = im.deal !== null && im.deal !== undefined ? im.deal : cm.deal;
+      out.manager = {
+        started: !!(cm.started || im.started || mergedDeal !== null),
+        round: Math.max(Number(cm.round || 0), Number(im.round || 0)),
+        deal: mergedDeal,
+        by: im.by || cm.by || null,
+        updatedAt: Math.max(Number(cm.updatedAt || 0), Number(im.updatedAt || 0))
+      };
+    }
+
+    // 合併 clients
+    ["seller", "buyer"].forEach((cKey) => {
+      const cc = cur.clients[cKey];
+      const ic = inc.clients[cKey];
+      ["0", "1", "2"].forEach((rKey) => {
+        const cr = (cc && cc.rounds && cc.rounds[rKey]) || { price: null, cond: "", card: null };
+        const ir = (ic && ic.rounds && ic.rounds[rKey]) || { price: null, cond: "", card: null };
+        out.clients[cKey].rounds[rKey] = {
+          price: ir.price !== null && ir.price !== undefined ? ir.price : cr.price,
+          cond: ir.cond ? ir.cond : cr.cond,
+          card: ir.card !== null && ir.card !== undefined ? ir.card : cr.card
+        };
+      });
+      const cDrawn = (cc && cc.deck && cc.deck.drawn) || [];
+      const iDrawn = (ic && ic.deck && ic.deck.drawn) || [];
+      out.clients[cKey].deck = iDrawn.length >= cDrawn.length ? ic.deck : cc.deck;
+      out.clients[cKey].by = ic.by || cc.by || null;
+    });
+
+    // 合併 agents（保留所有歷史傳話紀錄，遊戲中絕不刪除）
+    ["sagent", "bagent"].forEach((aKey) => {
+      const ca = cur.agents[aKey] || createEmptyAgentNode();
+      const ia = inc.agents[aKey] || createEmptyAgentNode();
+      const combinedHist = [...(ca.history || []), ...(ia.history || [])];
+      const byId = new Map();
+      const bySig = new Set();
+      combinedHist.forEach((h) => {
+        if (!h) return;
+        const sig = `${h.offer !== null ? h.offer : ""}|${h.intel || ""}|${h.round || 0}`;
+        if (byId.has(h.id)) {
+          const prev = byId.get(h.id);
+          byId.set(h.id, {
+            id: h.id,
+            round: h.round !== undefined ? h.round : prev.round,
+            roundLabel: h.roundLabel || prev.roundLabel,
+            offer: h.offer !== null && h.offer !== undefined ? h.offer : prev.offer,
+            intel: h.intel ? h.intel : prev.intel,
+            byNick: h.byNick || prev.byNick || ia.byNick || ca.byNick || "",
+            ts: Math.max(Number(h.ts || 0), Number(prev.ts || 0))
+          });
+        } else if (!bySig.has(sig)) {
+          bySig.add(sig);
+          byId.set(h.id, h);
+        }
+      });
+      const mergedHist = Array.from(byId.values()).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      let latestOffer = ia.offer !== null && ia.offer !== undefined ? ia.offer : ca.offer;
+      let latestIntel = ia.intel ? ia.intel : ca.intel;
+      for (let i = mergedHist.length - 1; i >= 0; i--) {
+        if (latestOffer === null && mergedHist[i].offer !== null) latestOffer = mergedHist[i].offer;
+        if (!latestIntel && mergedHist[i].intel) latestIntel = mergedHist[i].intel;
+      }
+      const incNewer = Number(ia.notesUpdatedAt || 0) >= Number(ca.notesUpdatedAt || 0);
+      const mergedNotes = incNewer
+        ? mergeAgentNotesObjects(ia.notes, ca.notes)
+        : mergeAgentNotesObjects(ca.notes, ia.notes);
+
+      out.agents[aKey] = {
+        intel: latestIntel || "",
+        offer: latestOffer !== undefined ? latestOffer : null,
+        draftIntel: incNewer ? ia.draftIntel || ca.draftIntel || "" : ca.draftIntel || ia.draftIntel || "",
+        draftOffer: incNewer ? ia.draftOffer || ca.draftOffer || "" : ca.draftOffer || ia.draftOffer || "",
+        history: mergedHist,
+        by: ia.by || ca.by || null,
+        byNick: ia.byNick || ca.byNick || "",
+        notes: mergedNotes,
+        notesUpdatedAt: Math.max(Number(ca.notesUpdatedAt || 0), Number(ia.notesUpdatedAt || 0))
+      };
+    });
+
+    // 合併 observers
+    const allObsKeys = new Set([...Object.keys(cur.observers || {}), ...Object.keys(inc.observers || {})]);
+    allObsKeys.forEach((k) => {
+      const co = cur.observers && cur.observers[k];
+      const io = inc.observers && inc.observers[k];
+      if (co && io) {
+        out.observers[k] = Number(io.updatedAt || 0) >= Number(co.updatedAt || 0) ? io : co;
+      } else {
+        out.observers[k] = io || co;
+      }
+    });
+
+    return out;
+  }
+
   // 本機備援房間存取（支援未設定 Firebase 時同台電腦跨分頁同步）
   function getAllLocalRooms() {
     try {
@@ -643,17 +937,23 @@
 
   function loadLocalRoom(code) {
     const all = getAllLocalRooms();
-    state.roomData = normalizeRoomData(all[code]);
+    if (all[code]) {
+      state.roomData = mergeRoomData(state.roomData, all[code]);
+    } else if (!state.roomData) {
+      state.roomData = createEmptyRoomData();
+    }
   }
 
-  function saveLocalRoom(code) {
+  function saveLocalRoom(code, skipMqttPublish) {
     try {
       const all = getAllLocalRooms();
       state.roomData.meta.updatedAt = Date.now();
       all[code] = state.roomData;
       localStorage.setItem(LS_LOCAL_ROOMS_KEY, JSON.stringify(all));
       if (bc) bc.postMessage({ roomCode: code, t: Date.now() });
-      publishMqttRoomState();
+      if (!skipMqttPublish) {
+        publishMqttRoomState();
+      }
     } catch (e) {}
   }
 
@@ -686,8 +986,8 @@
         try {
           const incoming = JSON.parse(payload.toString());
           if (!incoming || typeof incoming !== "object") return;
-          // 合併雲端狀態並保留本機在線狀態
-          const merged = normalizeRoomData(incoming);
+          // 合併雲端狀態與本機狀態，確保歷史傳話與仲介筆記絕不被覆蓋刪除
+          const merged = mergeRoomData(state.roomData, incoming);
           if (state.joined && state.uid) {
             merged.players[state.uid] = {
               nick: state.nick,
@@ -714,12 +1014,15 @@
     }
     currentMqttTopic = topic;
     mqttClient.subscribe(topic, { qos: 0 }, () => {
-      // 訂閱後稍等 350ms 接收保留訊息，再廣播自己的在線狀態
+      // 訂閱後稍等 400ms 接收保留訊息並合併，再廣播自己的在線狀態與仲介筆記
       setTimeout(() => {
         if (state.joined && state.roomCode === code) {
           markLocalPlayerOnline(true);
+          if (state.role === "sagent" || state.role === "bagent") {
+            syncAgentNotesToRoom(state.role, true);
+          }
         }
-      }, 350);
+      }, 400);
     });
   }
 
@@ -731,7 +1034,7 @@
     } catch (e) {}
   }
 
-  function markLocalPlayerOnline(online) {
+  function markLocalPlayerOnline(online, skipMqttPublish) {
     if (!state.roomCode) return;
     loadLocalRoom(state.roomCode);
     if (!state.roomData.players[state.uid]) {
@@ -743,7 +1046,7 @@
       online: online,
       lastSeen: Date.now()
     };
-    saveLocalRoom(state.roomCode);
+    saveLocalRoom(state.roomCode, skipMqttPublish);
   }
 
   function updatePlayerPresence() {
@@ -761,8 +1064,14 @@
         lastSeen: firebase.database.ServerValue.TIMESTAMP
       });
       db.ref(`rooms/${state.roomCode}/meta/updatedAt`).set(firebase.database.ServerValue.TIMESTAMP);
+      if (state.role === "sagent" || state.role === "bagent") {
+        syncAgentNotesToRoom(state.role, true);
+      }
     } else {
       markLocalPlayerOnline(true);
+      if (state.role === "sagent" || state.role === "bagent") {
+        syncAgentNotesToRoom(state.role, true);
+      }
     }
   }
 
@@ -790,14 +1099,15 @@
           roomRef.set(initData);
           state.roomData = initData;
         } else {
-          state.roomData = normalizeRoomData(val);
+          state.roomData = mergeRoomData(state.roomData, val);
         }
         renderAll();
       });
       updatePlayerPresence();
     } else {
       loadLocalRoom(code);
-      markLocalPlayerOnline(true);
+      // 先在記憶體與本機標記在線，待 subscribeMqttRoom 收到雲端保留訊息合併後再發布至 MQTT，避免覆蓋既有房間資料
+      markLocalPlayerOnline(true, true);
       subscribeMqttRoom(code);
       renderAll();
     }
@@ -857,13 +1167,112 @@
     }
   }
 
-  function syncAgentNotesToRoom(agentKey) {
+  function syncAgentNotesToRoom(agentKey, skipRender) {
     if (state.role !== agentKey && state.joined) return;
-    const notes = state.notes[agentKey];
-    writeRoomPatch(`agents/${agentKey}/notes`, notes, true);
-    if (state.nick) {
-      writeRoomPatch(`agents/${agentKey}/byNick`, state.nick, true);
+    const curAgent = (state.roomData && state.roomData.agents && state.roomData.agents[agentKey]) || createEmptyAgentNode();
+    const draft = (state.agentDraft && state.agentDraft[agentKey]) || { offer: "", intel: "" };
+    const updatedNode = Object.assign({}, curAgent, {
+      by: state.uid || curAgent.by || null,
+      byNick: getMyLoginNick() || curAgent.byNick || "",
+      draftOffer: String(draft.offer || ""),
+      draftIntel: String(draft.intel || ""),
+      notes: state.notes[agentKey],
+      notesUpdatedAt: Date.now()
+    });
+    writeRoomPatch(`agents/${agentKey}`, updatedNode, skipRender !== undefined ? skipRender : true);
+  }
+
+  function commitAgentMessageHistory(agentKey, rawOffer, rawIntel, isExplicitSend) {
+    const cleanOffer = sanitizePrice(rawOffer);
+    const cleanIntel = String(rawIntel || "").trim().slice(0, 300);
+    const draftObj = state.agentDraft[agentKey] || { offer: "", intel: "", currentDraftId: null };
+
+    // 若輸入框被清空，絕不刪除或覆蓋已經出現過的歷史紀錄與數值
+    if (cleanOffer === null && !cleanIntel) {
+      draftObj.currentDraftId = null;
+      return false;
     }
+
+    const curAgent = (state.roomData && state.roomData.agents && state.roomData.agents[agentKey]) || createEmptyAgentNode();
+    const history = Array.isArray(curAgent.history) ? [...curAgent.history] : [];
+    const mRound = state.roomData && state.roomData.manager ? Number(state.roomData.manager.round || 0) : 0;
+    const roundLabel = ROUND_LABELS[mRound] || "第一輪";
+    const senderNick = getMyLoginNick();
+    const now = Date.now();
+
+    let targetIdx = -1;
+    if (draftObj.currentDraftId) {
+      targetIdx = history.findIndex((h) => h && h.id === draftObj.currentDraftId);
+    }
+
+    if (targetIdx >= 0) {
+      const existing = history[targetIdx];
+      history[targetIdx] = {
+        id: existing.id,
+        round: mRound,
+        roundLabel,
+        // 只在有輸入新值時更新，若其中一欄空白則保留該筆原本已出現過的內容，絕不刪除
+        offer: cleanOffer !== null ? cleanOffer : existing.offer,
+        intel: cleanIntel ? cleanIntel : existing.intel,
+        byNick: senderNick || existing.byNick || "",
+        ts: now
+      };
+    } else {
+      const newId = `msg_${agentKey}_${now}_${Math.random().toString(36).slice(2, 6)}`;
+      history.push({
+        id: newId,
+        round: mRound,
+        roundLabel,
+        offer: cleanOffer,
+        intel: cleanIntel,
+        byNick: senderNick,
+        ts: now
+      });
+      draftObj.currentDraftId = isExplicitSend ? null : newId;
+    }
+
+    if (isExplicitSend) {
+      draftObj.currentDraftId = null;
+      draftObj.offer = "";
+      draftObj.intel = "";
+    }
+
+    let latestOffer = cleanOffer !== null ? cleanOffer : curAgent.offer;
+    let latestIntel = cleanIntel ? cleanIntel : curAgent.intel;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (latestOffer === null && history[i].offer !== null) latestOffer = history[i].offer;
+      if (!latestIntel && history[i].intel) latestIntel = history[i].intel;
+    }
+
+    const updatedNode = {
+      intel: latestIntel || "",
+      offer: latestOffer !== undefined ? latestOffer : null,
+      draftOffer: isExplicitSend ? "" : String(draftObj.offer || ""),
+      draftIntel: isExplicitSend ? "" : String(draftObj.intel || ""),
+      history,
+      by: state.uid,
+      byNick: senderNick,
+      notes: state.notes[agentKey],
+      notesUpdatedAt: now
+    };
+
+    writeRoomPatch(`agents/${agentKey}`, updatedNode, !isExplicitSend);
+    return true;
+  }
+
+  function getAgentMessageHistory(agentKey) {
+    const ag = (state.roomData && state.roomData.agents && state.roomData.agents[agentKey]) || createEmptyAgentNode();
+    return normalizeAgentHistoryList(ag.history, ag.offer, ag.intel, ag.byNick);
+  }
+
+  function getSyncedAgentNotes(agentKey) {
+    const ag = (state.roomData && state.roomData.agents && state.roomData.agents[agentKey]) || null;
+    const synced = ag && ag.notes;
+    const local = state.notes && state.notes[agentKey];
+    if (state.role === agentKey || !state.joined) {
+      return mergeAgentNotesObjects(local, synced) || createDefaultAgentNotes();
+    }
+    return mergeAgentNotesObjects(synced, local) || createDefaultAgentNotes();
   }
 
   function getMyLoginNick() {
@@ -1356,6 +1765,29 @@
 
   function renderActiveTab() {
     const container = document.getElementById("app-view");
+
+    // 紀錄目前正在輸入中的欄位焦點與游標，避免遠端同步重繪時打斷輸入
+    let activeInputSnapshot = null;
+    const activeEl = document.activeElement;
+    if (
+      activeEl &&
+      container.contains(activeEl) &&
+      (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA") &&
+      activeEl.type !== "checkbox" &&
+      activeEl.type !== "radio"
+    ) {
+      activeInputSnapshot = {
+        id: activeEl.id || "",
+        className: activeEl.className || "",
+        dataIdx: activeEl.getAttribute("data-idx"),
+        dataStage: activeEl.getAttribute("data-stage"),
+        dataFb: activeEl.getAttribute("data-fb"),
+        value: activeEl.value,
+        selStart: typeof activeEl.selectionStart === "number" ? activeEl.selectionStart : null,
+        selEnd: typeof activeEl.selectionEnd === "number" ? activeEl.selectionEnd : null
+      };
+    }
+
     let pageHtml = "";
     switch (state.tab) {
       case "room":
@@ -1426,6 +1858,38 @@
     }
     bindSubfolderStateEvents();
     bindGameStartControlEvents();
+
+    if (activeInputSnapshot) {
+      let targetEl = null;
+      if (activeInputSnapshot.id) {
+        targetEl = document.getElementById(activeInputSnapshot.id);
+      } else {
+        const candidates = container.querySelectorAll("input, textarea");
+        for (let i = 0; i < candidates.length; i++) {
+          const c = candidates[i];
+          if (
+            c.className === activeInputSnapshot.className &&
+            c.getAttribute("data-idx") === activeInputSnapshot.dataIdx &&
+            c.getAttribute("data-stage") === activeInputSnapshot.dataStage &&
+            c.getAttribute("data-fb") === activeInputSnapshot.dataFb
+          ) {
+            targetEl = c;
+            break;
+          }
+        }
+      }
+      if (targetEl) {
+        if (targetEl.value !== activeInputSnapshot.value && activeInputSnapshot.value !== "") {
+          targetEl.value = activeInputSnapshot.value;
+        }
+        try {
+          targetEl.focus({ preventScroll: true });
+          if (activeInputSnapshot.selStart !== null && targetEl.setSelectionRange) {
+            targetEl.setSelectionRange(activeInputSnapshot.selStart, activeInputSnapshot.selEnd);
+          }
+        } catch (e) {}
+      }
+    }
   }
 
   function bindSubfolderStateEvents() {
@@ -1562,7 +2026,8 @@
 
   function bindGameStartControlEvents() {
     const doStart = () => {
-      writeRoomPatch("manager/started", true);
+      writeRoomPatch("manager/updatedAt", Date.now(), true);
+      writeRoomPatch("manager/started", true, true);
       writeRoomPatch("manager/by", state.uid);
     };
     document.querySelectorAll(".btn-trigger-game-start, .btn-force-game-start").forEach((btn) => {
@@ -1572,6 +2037,7 @@
       btn.addEventListener("click", () => {
         state.revealSellerRole = false;
         state.revealBuyerRole = false;
+        writeRoomPatch("manager/updatedAt", Date.now(), true);
         writeRoomPatch("manager/started", false);
       });
     });
@@ -2422,6 +2888,141 @@
   }
 
   // ==================== 5.4 賣方仲介／買方仲介 ====================
+  function formatShortTime(ts) {
+    if (!ts || ts <= 1000) return "";
+    try {
+      const d = new Date(Number(ts));
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      return `${hh}:${mm}:${ss}`;
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function renderAgentMessageLogHtml(agentKey, agentLabel) {
+    const ag = (state.roomData && state.roomData.agents && state.roomData.agents[agentKey]) || createEmptyAgentNode();
+    const history = getAgentMessageHistory(agentKey);
+    const draftOffer = ag.draftOffer ? String(ag.draftOffer).trim() : "";
+    const draftIntel = ag.draftIntel ? String(ag.draftIntel).trim() : "";
+
+    let latestOffer = ag.offer !== null && ag.offer !== undefined ? ag.offer : null;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].offer !== null && history[i].offer !== undefined) {
+        latestOffer = history[i].offer;
+        break;
+      }
+    }
+
+    const lastItem = history.length > 0 ? history[history.length - 1] : null;
+    const hasUnsentDraft =
+      (draftOffer !== "" || draftIntel !== "") &&
+      (!lastItem ||
+        (draftOffer !== "" && String(lastItem.offer ?? "") !== draftOffer) ||
+        (draftIntel !== "" && String(lastItem.intel || "") !== draftIntel));
+
+    if (history.length === 0 && !hasUnsentDraft) {
+      return `
+        <div style="font-size:1.05rem;font-weight:900;color:var(--brick);margin-bottom:4px;">
+          帶過來的數字：尚未傳送
+        </div>
+        <div style="white-space:pre-wrap;font-size:0.93rem;color:var(--muted);">
+          （尚未傳話）
+        </div>
+      `;
+    }
+
+    const latestHeadlineOffer =
+      latestOffer !== null && latestOffer !== undefined
+        ? `${formatNum(latestOffer)} 萬`
+        : hasUnsentDraft && draftOffer
+        ? `${escapeHtml(draftOffer)} 萬（輸入中）`
+        : "（僅傳話未填數字）";
+
+    return `
+      <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;">
+        <div style="font-size:1.05rem;font-weight:900;color:var(--brick);">
+          帶過來的數字：${latestHeadlineOffer}
+        </div>
+        <span style="font-size:0.76rem;background:#EFE8DC;color:var(--dark-band);padding:2px 8px;border-radius:999px;font-weight:700;">
+          歷史紀錄共 ${history.length} 筆（遊戲中不刪除）
+        </span>
+      </div>
+      <div class="agent-msg-history-list">
+        ${history
+          .map((item, idx) => {
+            const isLatest = idx === history.length - 1 && !hasUnsentDraft;
+            const timeStr = formatShortTime(item.ts);
+            return `
+              <div class="agent-msg-item ${isLatest ? "latest" : ""}">
+                <div class="agent-msg-head">
+                  <span class="agent-msg-badge">#${idx + 1}｜${escapeHtml(item.roundLabel || "第一輪")}</span>
+                  ${
+                    item.byNick
+                      ? `<span style="font-size:0.78rem;font-weight:700;color:var(--text);">👤 ${escapeHtml(item.byNick)}</span>`
+                      : `<span style="font-size:0.78rem;color:var(--muted);">${escapeHtml(agentLabel || "")}</span>`
+                  }
+                  ${isLatest ? `<span class="agent-msg-latest-tag">最新</span>` : ""}
+                  ${timeStr ? `<span style="font-size:0.75rem;color:var(--muted);margin-left:auto;">${escapeHtml(timeStr)}</span>` : ""}
+                </div>
+                <div class="agent-msg-offer">
+                  帶過來的數字：<strong class="num" style="color:var(--brick);">${
+                    item.offer !== null && item.offer !== undefined ? formatNum(item.offer) + " 萬" : "（未填數字）"
+                  }</strong>
+                </div>
+                <div class="agent-msg-text">${item.intel ? escapeHtml(item.intel) : "（未附文字說明）"}</div>
+              </div>
+            `;
+          })
+          .join("")}
+        ${
+          hasUnsentDraft
+            ? `
+              <div class="agent-msg-item draft">
+                <div class="agent-msg-head">
+                  <span class="agent-msg-badge draft">✍️ ${escapeHtml(agentLabel || "仲介")}正在輸入中（即時同步）</span>
+                </div>
+                <div class="agent-msg-offer">
+                  帶過來的數字：<strong class="num" style="color:var(--brick);">${
+                    draftOffer ? escapeHtml(draftOffer) + " 萬" : "（尚未填數字）"
+                  }</strong>
+                </div>
+                <div class="agent-msg-text">${draftIntel ? escapeHtml(draftIntel) : "（尚未輸入文字）"}</div>
+              </div>
+            `
+            : ""
+        }
+      </div>
+    `;
+  }
+
+  function renderMySentMessagesSummaryHtml(agentKey, otherAgentLabel) {
+    const history = getAgentMessageHistory(agentKey);
+    if (history.length === 0) {
+      return `<div style="font-size:0.82rem;color:var(--muted);">💡 輸入上方數字與話術後按「同步傳送」，每一次傳送的內容都會保留在對方左欄及店長／觀察者畫面中，不會被覆蓋刪除。</div>`;
+    }
+    return `
+      <div style="font-size:0.82rem;font-weight:700;color:var(--muted);margin-bottom:6px;">
+        ✅ 你在本局已傳送給${escapeHtml(otherAgentLabel)}與店長／觀察者的紀錄（共 ${history.length} 筆・全程保留）：
+      </div>
+      <div class="agent-msg-history-list compact">
+        ${history
+          .map(
+            (item, idx) => `
+          <div class="agent-msg-item compact">
+            <span class="agent-msg-badge">#${idx + 1}｜${escapeHtml(item.roundLabel || "第一輪")}</span>
+            <strong class="num" style="color:var(--brick);margin:0 6px;">${
+              item.offer !== null && item.offer !== undefined ? formatNum(item.offer) + " 萬" : "未填數字"
+            }</strong>
+            <span style="font-size:0.86rem;color:var(--text);">${escapeHtml(item.intel || "（無文字）")}</span>
+          </div>`
+          )
+          .join("")}
+      </div>
+    `;
+  }
+
   function renderAgentPage(agentKey) {
     const isSellerAgent = agentKey === "sagent";
     const A = isSellerAgent ? CONTENT.SAGENT : CONTENT.BAGENT;
@@ -2432,13 +3033,10 @@
     const reacts = isSellerAgent ? CONTENT.SELLER_REACT : CONTENT.BUYER_REACT;
 
     const cNode = state.roomData.clients[clientKey];
-    const mySync = state.roomData.agents[agentKey] || { intel: "", offer: null };
-    const otherSync = state.roomData.agents[otherAgentKey] || { intel: "", offer: null };
-    const isMyAgentRole = state.role === agentKey || !state.joined;
-    const syncedAgentNotes = state.roomData.agents[agentKey] && state.roomData.agents[agentKey].notes;
-    const notes = !isMyAgentRole && syncedAgentNotes ? syncedAgentNotes : state.notes[agentKey];
+    const notes = getSyncedAgentNotes(agentKey);
     const agentHolderNick = (state.roomData.agents[agentKey] && state.roomData.agents[agentKey].byNick) || "";
     const checks = checkAgentLadder(agentKey, notes);
+    const draftObj = (state.agentDraft && state.agentDraft[agentKey]) || { offer: "", intel: "" };
 
     const viewerBanner =
       state.role !== agentKey
@@ -2513,31 +3111,37 @@
         </table>
 
         <div class="form-grid">
-          <div style="background:var(--light-bg);padding:12px;border-radius:8px;">
-            <div class="field-label">📨 ${otherAgentLabel}傳來的話與帶過來的數字</div>
-            <div style="font-size:1.05rem;font-weight:900;color:var(--brick);margin-bottom:4px;">
-              帶過來的數字：${otherSync.offer !== null && otherSync.offer !== undefined ? formatNum(otherSync.offer) + " 萬" : "尚未傳送"}
+          <div style="background:var(--light-bg);padding:12px;border-radius:8px;border:1px solid var(--line);">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;">
+              <div class="field-label" style="margin-bottom:0;">📨 ${otherAgentLabel}傳來的話與帶過來的數字</div>
+              <span style="font-size:0.75rem;color:var(--ok-text);font-weight:700;">📌 出現過的內容在遊戲中全程保留不刪除</span>
             </div>
-            <div style="white-space:pre-wrap;font-size:0.93rem;">
-              ${otherSync.intel ? escapeHtml(otherSync.intel) : "（尚未傳話）"}
+            <div id="other-agent-msg-log-box">
+              ${renderAgentMessageLogHtml(otherAgentKey, otherAgentLabel)}
             </div>
           </div>
 
-          <div style="background:var(--light-bg);padding:12px;border-radius:8px;">
-            <div class="field-label">📤 傳給${otherAgentLabel}的話（同步給${otherAgentLabel}與店長）</div>
+          <div style="background:var(--light-bg);padding:12px;border-radius:8px;border:1px solid var(--line);">
+            <div class="field-label">📤 傳給${otherAgentLabel}的話（同步給${otherAgentLabel}、店長與觀察者）</div>
             <div style="display:grid;grid-template-columns:140px 1fr;gap:8px;margin-bottom:8px;">
               <div>
-                <input type="number" id="inp-agent-offer" min="0" max="5000" step="10" placeholder="帶過去萬" value="${
-                  mySync.offer !== null && mySync.offer !== undefined ? escapeHtml(mySync.offer) : ""
-                }" />
+                <input type="number" id="inp-agent-offer" min="0" max="5000" step="10" placeholder="帶過去萬" value="${escapeHtml(
+                  draftObj.offer || ""
+                )}" />
               </div>
               <div>
                 <input type="text" id="inp-agent-intel" maxlength="300" placeholder="輸入買方/屋主的故事與條件（最多 300 字）" value="${escapeHtml(
-                  mySync.intel || ""
+                  draftObj.intel || ""
                 )}" />
               </div>
             </div>
-            <button type="button" id="btn-send-agent-sync" class="btn btn-sm btn-primary">同步傳送給${otherAgentLabel}</button>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+              <button type="button" id="btn-send-agent-sync" class="btn btn-sm btn-primary">同步傳送給${otherAgentLabel}</button>
+              <span id="agent-send-feedback" style="font-size:0.82rem;color:var(--ok-text);font-weight:700;"></span>
+            </div>
+            <div id="my-agent-sent-log-box" style="margin-top:10px;">
+              ${renderMySentMessagesSummaryHtml(agentKey, otherAgentLabel)}
+            </div>
           </div>
         </div>
       </div>
@@ -2786,21 +3390,73 @@
       });
     });
 
-    // 同步給另一位仲介
+    // 同步給另一位仲介、店長與觀察者（左邊出現過的歷史內容在遊戲中全程保留不刪除）
     const inpOffer = document.getElementById("inp-agent-offer");
     const inpIntel = document.getElementById("inp-agent-intel");
-    const doSyncAgent = () => {
-      writeRoomPatch(`agents/${agentKey}`, {
-        offer: sanitizePrice(inpOffer.value),
-        intel: String(inpIntel.value || "").slice(0, 300),
-        by: state.uid,
-        byNick: getMyLoginNick(),
-        notes: state.notes[agentKey]
-      });
+    const otherAgentLabel = isSellerAgent ? "買方仲介" : "賣方仲介";
+
+    const updateDraftPreview = () => {
+      if (!state.agentDraft[agentKey]) {
+        state.agentDraft[agentKey] = { offer: "", intel: "", currentDraftId: null };
+      }
+      state.agentDraft[agentKey].offer = inpOffer.value;
+      state.agentDraft[agentKey].intel = inpIntel.value;
+      syncAgentNotesToRoom(agentKey, true);
     };
-    document.getElementById("btn-send-agent-sync").addEventListener("click", doSyncAgent);
-    inpOffer.addEventListener("change", doSyncAgent);
-    inpIntel.addEventListener("change", doSyncAgent);
+
+    const handleAutoCommitOnBlur = () => {
+      if (!state.agentDraft[agentKey]) {
+        state.agentDraft[agentKey] = { offer: "", intel: "", currentDraftId: null };
+      }
+      state.agentDraft[agentKey].offer = inpOffer.value;
+      state.agentDraft[agentKey].intel = inpIntel.value;
+      const saved = commitAgentMessageHistory(agentKey, inpOffer.value, inpIntel.value, false);
+      if (saved) {
+        const myLogBox = document.getElementById("my-agent-sent-log-box");
+        if (myLogBox) {
+          myLogBox.innerHTML = renderMySentMessagesSummaryHtml(agentKey, otherAgentLabel);
+        }
+      }
+    };
+
+    const handleExplicitSend = () => {
+      const saved = commitAgentMessageHistory(agentKey, inpOffer.value, inpIntel.value, true);
+      if (saved) {
+        inpOffer.value = "";
+        inpIntel.value = "";
+        const fbEl = document.getElementById("agent-send-feedback");
+        if (fbEl) {
+          fbEl.textContent = "✅ 已傳送並永久保留於本局紀錄中！";
+          setTimeout(() => {
+            const el = document.getElementById("agent-send-feedback");
+            if (el) el.textContent = "";
+          }, 2500);
+        }
+      } else {
+        const fbEl = document.getElementById("agent-send-feedback");
+        if (fbEl) {
+          fbEl.textContent = "⚠️ 請先輸入要帶過去的數字或傳話內容";
+        }
+      }
+    };
+
+    inpOffer.addEventListener("input", updateDraftPreview);
+    inpIntel.addEventListener("input", updateDraftPreview);
+    inpOffer.addEventListener("change", handleAutoCommitOnBlur);
+    inpIntel.addEventListener("change", handleAutoCommitOnBlur);
+    inpOffer.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleExplicitSend();
+      }
+    });
+    inpIntel.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleExplicitSend();
+      }
+    });
+    document.getElementById("btn-send-agent-sync").addEventListener("click", handleExplicitSend);
 
     // 任務勾選
     document.querySelectorAll(".chk-agent-task").forEach((chk) => {
@@ -2988,12 +3644,13 @@
   function renderLiveTableCard() {
     const sClient = state.roomData.clients.seller;
     const bClient = state.roomData.clients.buyer;
-    const sAgent = state.roomData.agents.sagent || { intel: "", offer: null };
-    const bAgent = state.roomData.agents.bagent || { intel: "", offer: null };
 
     return `
       <div class="card">
-        <div class="card-title">👀 即時牌桌（全組同步・可看雙方完整反應卡與仲介傳話）</div>
+        <div class="card-title">
+          <span>👀 即時牌桌（全組同步・可看雙方完整反應卡與買賣方經紀人歷次傳話）</span>
+          <span style="font-size:0.8rem;color:var(--ok-text);font-weight:700;">📌 經紀人傳話與數字全程保留不刪除</span>
+        </div>
         <table class="resp-table" style="margin-bottom:14px;">
           <thead>
             <tr>
@@ -3030,14 +3687,208 @@
         </table>
 
         <div class="form-grid">
-          <div style="background:var(--light-bg);padding:12px;border-radius:8px;">
-            <strong>賣方仲介 → 買方仲介（帶過去：${sAgent.offer !== null && sAgent.offer !== undefined ? formatNum(sAgent.offer) + " 萬" : "—"}）</strong>
-            <div style="font-size:0.92rem;margin-top:4px;">${escapeHtml(sAgent.intel || "（尚未傳話）")}</div>
+          <div style="background:var(--light-bg);padding:12px;border-radius:8px;border:1px solid var(--line);">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;">
+              <strong><span class="role-badge role-sagent">賣方仲介 → 買方仲介</span> 傳來的話與帶過去的數字</strong>
+            </div>
+            ${renderAgentMessageLogHtml("sagent", "賣方仲介")}
           </div>
-          <div style="background:var(--light-bg);padding:12px;border-radius:8px;">
-            <strong>買方仲介 → 賣方仲介（帶過去：${bAgent.offer !== null && bAgent.offer !== undefined ? formatNum(bAgent.offer) + " 萬" : "—"}）</strong>
-            <div style="font-size:0.92rem;margin-top:4px;">${escapeHtml(bAgent.intel || "（尚未傳話）")}</div>
+          <div style="background:var(--light-bg);padding:12px;border-radius:8px;border:1px solid var(--line);">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;">
+              <strong><span class="role-badge role-bagent">買方仲介 → 賣方仲介</span> 傳來的話與帶過去的數字</strong>
+            </div>
+            ${renderAgentMessageLogHtml("bagent", "買方仲介")}
           </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderSingleAgentSyncColumn(agentKey) {
+    const isSellerAgent = agentKey === "sagent";
+    const A = isSellerAgent ? CONTENT.SAGENT : CONTENT.BAGENT;
+    const badgeCls = isSellerAgent ? "role-sagent" : "role-bagent";
+    const otherAgentLabel = isSellerAgent ? "買方仲介" : "賣方仲介";
+    const agNode = (state.roomData && state.roomData.agents && state.roomData.agents[agentKey]) || createEmptyAgentNode();
+    const notes = getSyncedAgentNotes(agentKey);
+
+    // 找出房間內擔任此角色的學員暱稱
+    const playersMap = (state.roomData && state.roomData.players) || {};
+    const holderNicks = Object.values(playersMap)
+      .filter((p) => p && p.online && p.role === agentKey)
+      .map((p) => p.nick || "學員");
+    const displayNick = holderNicks.length > 0 ? holderNicks.join("、") : agNode.byNick || "尚未指派";
+
+    const doneTaskCount = Array.isArray(notes.tasks) ? notes.tasks.filter(Boolean).length : 0;
+
+    // 識局探索已填項目
+    const filledExplore = A.explore
+      .map((ex, i) => ({ label: ex[0], val: String((notes.explore && notes.explore[i]) || "").trim() }))
+      .filter((x) => x.val.length > 0);
+
+    // 交換情報已填項目
+    const filledIntel = A.intel
+      .map((lbl, i) => ({ label: lbl, val: String((notes.intel && notes.intel[i]) || "").trim() }))
+      .filter((x) => x.val.length > 0);
+
+    // 看出交集已填項目
+    const filledCross = [0, 1, 2]
+      .map((i) => (notes.cross && notes.cross[i]) || { care: "", give: "", hook: "" })
+      .filter((c) => c.care || c.give || c.hook);
+
+    // 回合紀錄已填項目
+    const filledLogs = ROUND_LABELS.map((rLbl, idx) => {
+      const lg = (notes.logs && notes.logs[idx]) || { card: "", price: "", reply: "", cond: "" };
+      return { rLbl, lg, hasAny: !!(lg.card || lg.price || lg.reply || lg.cond) };
+    }).filter((x) => x.hasAny);
+
+    return `
+      <div class="agent-sync-panel">
+        <div class="agent-sync-panel-head">
+          <div>
+            <span class="role-badge ${badgeCls}">${escapeHtml(A.name)}</span>
+            <strong style="margin-left:6px;">👤 經紀人：${escapeHtml(displayNick)}</strong>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:0.8rem;color:var(--muted);">任務勾選：<strong>${doneTaskCount}/6</strong></span>
+            <a href="#${agentKey}" class="btn btn-sm">開啟完整頁籤 ↗</a>
+          </div>
+        </div>
+
+        <!-- 1. 傳給對方仲介的話與帶過去的數字 -->
+        <div class="agent-sync-subbox">
+          <div class="agent-sync-subtitle">📨 1. 傳給${escapeHtml(otherAgentLabel)}的話與帶過去的數字（全程保留不刪除）</div>
+          ${renderAgentMessageLogHtml(agentKey, A.name)}
+        </div>
+
+        <!-- 2. 價格階梯規劃 -->
+        <div class="agent-sync-subbox">
+          <div class="agent-sync-subtitle">🪜 2. ${escapeHtml(A.ladder_title)}</div>
+          <table class="resp-table" style="font-size:0.86rem;margin-bottom:0;">
+            <thead>
+              <tr>
+                <th>步驟</th>
+                <th>數字（萬）</th>
+                <th>柱子與論述</th>
+                <th>換條件／退路</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${A.ladder
+                .map((lRow, idx) => {
+                  const nRow = (notes.ladder && notes.ladder[idx]) || { price: "", pillars: [], arg: "", cond: "", next: "" };
+                  const isEst = idx === 3;
+                  const pillarsStr = Array.isArray(nRow.pillars) && nRow.pillars.length > 0 ? `【${nRow.pillars.join("、")}】` : "";
+                  return `
+                    <tr>
+                      <td data-label="步驟"><strong>${escapeHtml(lRow[0])}</strong></td>
+                      <td data-label="數字（萬）"><strong class="num" style="color:var(--brick);">${
+                        nRow.price ? escapeHtml(nRow.price) + " 萬" : "—"
+                      }</strong></td>
+                      <td data-label="柱子與論述">${
+                        pillarsStr || nRow.arg
+                          ? `<span style="color:var(--accent);font-weight:700;">${escapeHtml(pillarsStr)}</span> ${escapeHtml(nRow.arg || "")}`
+                          : "—"
+                      }</td>
+                      <td data-label="換條件／退路">${
+                        isEst
+                          ? "—"
+                          : nRow.cond || nRow.next
+                          ? `換：${escapeHtml(nRow.cond || "—")} ／ 退：${escapeHtml(nRow.next || "—")}`
+                          : "—"
+                      }</td>
+                    </tr>
+                  `;
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 3. 識局探索與交換情報 -->
+        <div class="agent-sync-subbox">
+          <div class="agent-sync-subtitle">🔍 3. 識局探索、交換情報與看出交集</div>
+          ${
+            filledExplore.length === 0 && filledIntel.length === 0 && filledCross.length === 0
+              ? `<div style="font-size:0.86rem;color:var(--muted);">（${escapeHtml(A.name)}尚未填寫識局探索與交換情報筆記）</div>`
+              : `
+                ${
+                  filledExplore.length > 0
+                    ? `<div style="margin-bottom:8px;">
+                        <div style="font-size:0.8rem;font-weight:900;color:var(--accent);margin-bottom:4px;">▸ 識局探索：</div>
+                        ${filledExplore
+                          .map(
+                            (x) =>
+                              `<div style="font-size:0.86rem;margin-bottom:2px;"><strong>${escapeHtml(x.label)}：</strong>${escapeHtml(x.val)}</div>`
+                          )
+                          .join("")}
+                      </div>`
+                    : ""
+                }
+                ${
+                  filledIntel.length > 0
+                    ? `<div style="margin-bottom:8px;">
+                        <div style="font-size:0.8rem;font-weight:900;color:var(--accent);margin-bottom:4px;">▸ 交換情報：</div>
+                        ${filledIntel
+                          .map(
+                            (x) =>
+                              `<div style="font-size:0.86rem;margin-bottom:2px;"><strong>${escapeHtml(x.label)}：</strong>${escapeHtml(x.val)}</div>`
+                          )
+                          .join("")}
+                      </div>`
+                    : ""
+                }
+                ${
+                  filledCross.length > 0
+                    ? `<div>
+                        <div style="font-size:0.8rem;font-weight:900;color:var(--accent);margin-bottom:4px;">▸ 看出交集（If 條件掛鉤句）：</div>
+                        ${filledCross
+                          .map(
+                            (c, i) =>
+                              `<div style="font-size:0.86rem;margin-bottom:2px;">#${i + 1} 在乎：${escapeHtml(c.care || "—")} ｜ 可給：${escapeHtml(
+                                c.give || "—"
+                              )} ｜ 掛鉤句：<strong>${escapeHtml(c.hook || "—")}</strong></div>`
+                          )
+                          .join("")}
+                      </div>`
+                    : ""
+                }
+              `
+          }
+        </div>
+
+        <!-- 4. 回合紀錄 -->
+        <div class="agent-sync-subbox" style="margin-bottom:0;">
+          <div class="agent-sync-subtitle">📝 4. 各輪回合紀錄</div>
+          ${
+            filledLogs.length === 0
+              ? `<div style="font-size:0.86rem;color:var(--muted);">（${escapeHtml(A.name)}尚未填寫回合紀錄）</div>`
+              : filledLogs
+                  .map(
+                    (row) => `
+                  <div style="font-size:0.86rem;margin-bottom:4px;">
+                    <strong>${escapeHtml(row.rLbl)}</strong>｜卡號：${escapeHtml(row.lg.card || "—")}｜價格：<strong class="num">${escapeHtml(
+                      row.lg.price ? row.lg.price + " 萬" : "—"
+                    )}</strong>｜接招：${escapeHtml(row.lg.reply || "—")}｜換條件：${escapeHtml(row.lg.cond || "—")}
+                  </div>`
+                  )
+                  .join("")
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  function renderAgentsSyncOverviewCard() {
+    return `
+      <div class="card">
+        <div class="card-title">
+          <span>👔 買賣方經紀人（賣方仲介 ＆ 買方仲介）即時內容同步欄位</span>
+          <span style="font-size:0.84rem;color:var(--muted);">店長與觀察者可在此即時同步掌握雙方經紀人的傳話、價格階梯與識局筆記</span>
+        </div>
+        <div class="form-grid">
+          ${renderSingleAgentSyncColumn("sagent")}
+          ${renderSingleAgentSyncColumn("bagent")}
         </div>
       </div>
     `;
@@ -3275,6 +4126,7 @@
       ${renderGameStartControlCard()}
       ${renderQuickRolePeekBar("店長")}
       ${renderLiveTableCard()}
+      ${renderAgentsSyncOverviewCard()}
 
       <!-- 最後一步台詞範例 + 宣布成交 -->
       <div class="card">
@@ -3391,7 +4243,8 @@
     document.querySelectorAll(".btn-manager-round").forEach((btn) => {
       btn.addEventListener("click", () => {
         const r = Number(btn.getAttribute("data-round"));
-        writeRoomPatch("manager/round", r);
+        writeRoomPatch("manager/updatedAt", Date.now(), true);
+        writeRoomPatch("manager/round", r, true);
         writeRoomPatch("manager/by", state.uid);
       });
     });
@@ -3425,13 +4278,15 @@
     document.getElementById("btn-announce-deal").addEventListener("click", () => {
       const val = sanitizePrice(inpDeal.value);
       if (val !== null) {
-        writeRoomPatch("manager/deal", val);
+        writeRoomPatch("manager/updatedAt", Date.now(), true);
+        writeRoomPatch("manager/deal", val, true);
         writeRoomPatch("manager/by", state.uid);
       }
     });
     const btnClearDeal = document.getElementById("btn-clear-deal");
     if (btnClearDeal) {
       btnClearDeal.addEventListener("click", () => {
+        writeRoomPatch("manager/updatedAt", Date.now(), true);
         writeRoomPatch("manager/deal", null);
       });
     }
@@ -3468,6 +4323,7 @@
 
       ${renderQuickRolePeekBar("觀察者")}
       ${renderLiveTableCard()}
+      ${renderAgentsSyncOverviewCard()}
 
       <!-- 1. 觀察檢核表（做到就打勾） -->
       <div class="card">
@@ -3785,7 +4641,8 @@
 
       ${
         isGameEnded() || state.role === "manager" || state.role === "observer"
-          ? renderQuickRolePeekBar(isGameEnded() ? "成交結束・全體" : state.role === "manager" ? "店長" : "觀察者")
+          ? renderQuickRolePeekBar(isGameEnded() ? "成交結束・全體" : state.role === "manager" ? "店長" : "觀察者") +
+            renderAgentsSyncOverviewCard()
           : ""
       }
 
@@ -3846,8 +4703,18 @@
 
     ["sagent", "bagent"].forEach((aKey) => {
       const A = aKey === "sagent" ? CONTENT.SAGENT : CONTENT.BAGENT;
-      const n = state.notes[aKey];
-      lines.push(`■ ${A.name}筆記：`);
+      const n = getSyncedAgentNotes(aKey);
+      const hist = getAgentMessageHistory(aKey);
+      lines.push(`■ ${A.name}筆記與傳話紀錄：`);
+      if (hist.length > 0) {
+        hist.forEach((h, i) => {
+          lines.push(
+            `  - 傳話紀錄 #${i + 1}（${h.roundLabel || "第一輪"}）：帶過去 ${
+              h.offer !== null && h.offer !== undefined ? h.offer + " 萬" : "未填"
+            }｜傳話：${h.intel || "無"}`
+          );
+        });
+      }
       A.explore.forEach((ex, i) => {
         if (n.explore[i]) lines.push(`  - ${ex[0]}：${n.explore[i]}`);
       });
@@ -3947,15 +4814,21 @@
       state.notes = createDefaultNotes();
       saveNotes();
       state.previewCardIdx = { seller: null, buyer: null };
+      state.agentDraft = {
+        sagent: { offer: "", intel: "", currentDraftId: null },
+        bagent: { offer: "", intel: "", currentDraftId: null }
+      };
       state.revealSellerRole = false;
       state.revealBuyerRole = false;
 
+      const resetStamp = Date.now();
       if (state.roomCode) {
-        writeRoomPatch("clients/seller", createEmptyClientNode());
-        writeRoomPatch("clients/buyer", createEmptyClientNode());
-        writeRoomPatch("agents/sagent", { intel: "", offer: null, by: null, byNick: "", notes: null });
-        writeRoomPatch("agents/bagent", { intel: "", offer: null, by: null, byNick: "", notes: null });
-        writeRoomPatch("manager", { started: false, round: 0, deal: null, by: null });
+        writeRoomPatch("meta/resetId", resetStamp, true);
+        writeRoomPatch("clients/seller", createEmptyClientNode(), true);
+        writeRoomPatch("clients/buyer", createEmptyClientNode(), true);
+        writeRoomPatch("agents/sagent", createEmptyAgentNode(), true);
+        writeRoomPatch("agents/bagent", createEmptyAgentNode(), true);
+        writeRoomPatch("manager", { started: false, round: 0, deal: null, by: null, updatedAt: resetStamp }, true);
         writeRoomPatch("observers", {});
       } else {
         state.roomData = createEmptyRoomData();

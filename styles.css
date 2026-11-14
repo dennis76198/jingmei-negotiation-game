@@ -951,6 +951,110 @@ textarea {
   color: #FFFDF8;
 }
 
+/* 仲介傳話與帶過去數字的歷史紀錄清單（遊戲中保留不刪除） */
+.agent-msg-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-msg-item {
+  background: #FFFFFF;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  box-shadow: 0 1px 2px rgba(59, 47, 37, 0.04);
+}
+.agent-msg-item.latest {
+  border-color: var(--accent);
+  background: #FFFDF9;
+}
+.agent-msg-item.draft {
+  border-style: dashed;
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+}
+.agent-msg-item.compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+}
+.agent-msg-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.agent-msg-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--dark-band);
+  color: #FFFDF8;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+.agent-msg-badge.draft {
+  background: var(--warn-text);
+}
+.agent-msg-latest-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--brick);
+  color: #FFFFFF;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+.agent-msg-offer {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.agent-msg-text {
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+/* 店長與觀察者頁面：買賣方經紀人即時內容同步面板 */
+.agent-sync-panel {
+  background: var(--light-bg);
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.agent-sync-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.agent-sync-subbox {
+  background: #FFFFFF;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.agent-sync-subtitle {
+  font-weight: 900;
+  font-size: 0.9rem;
+  color: var(--dark-band);
+  margin-bottom: 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px dashed var(--line);
+}
+
 /* 手機版 ≤ 760px 表格全部轉為單欄卡片並顯示小標 */
 @media (max-width: 760px) {
   .resp-table,
