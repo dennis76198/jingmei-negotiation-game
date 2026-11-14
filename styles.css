@@ -1055,6 +1055,134 @@ textarea {
   border-bottom: 1px dashed var(--line);
 }
 
+/* 店長輪次切換同步閃動提醒樣式 */
+@keyframes roundFlashPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(155, 42, 31, 0.55);
+  }
+  50% {
+    opacity: 0.38;
+    transform: scale(0.99);
+    box-shadow: 0 0 0 6px rgba(155, 42, 31, 0);
+  }
+}
+
+@keyframes roundTextBlink {
+  0%, 100% {
+    opacity: 1;
+    color: #9B2A1F;
+  }
+  50% {
+    opacity: 0.25;
+    color: #D9534F;
+  }
+}
+
+@keyframes bannerRoundBlink {
+  0%, 100% {
+    opacity: 1;
+    color: #FFE082;
+  }
+  50% {
+    opacity: 0.35;
+    color: #FFFFFF;
+  }
+}
+
+.blink-progress-pill {
+  background: #9B2A1F !important;
+  color: #FFFDF8 !important;
+  font-weight: 900 !important;
+  animation: roundFlashPulse 1.35s infinite ease-in-out;
+}
+
+.blink-banner-round {
+  display: inline-block;
+  font-weight: 900;
+  animation: bannerRoundBlink 1.2s infinite ease-in-out;
+}
+
+.blink-progress-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  background: #FFF3E0;
+  border: 2px solid #D97706;
+  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.14);
+}
+
+.blink-round-text {
+  font-weight: 900;
+  font-size: 0.95rem;
+  color: #9B2A1F;
+  animation: roundTextBlink 1.25s infinite ease-in-out;
+}
+
+.blink-round-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: #9B2A1F;
+  color: #FFFFFF;
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  animation: roundFlashPulse 1.25s infinite ease-in-out;
+}
+
+.blink-round-mini {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 900;
+  color: #FFE082;
+  animation: bannerRoundBlink 1.1s infinite ease-in-out;
+}
+
+.round-btn.mgr-current-round:not(.active) {
+  border-color: #9B2A1F;
+  color: #9B2A1F;
+  font-weight: 900;
+}
+.round-btn.mgr-current-round:not(.active) .blink-round-mini {
+  color: #9B2A1F;
+  animation: roundTextBlink 1.1s infinite ease-in-out;
+}
+
+.blink-round-inline-tip {
+  font-size: 0.8rem;
+  font-weight: 900;
+  color: #9B2A1F;
+  animation: roundTextBlink 1.2s infinite ease-in-out;
+}
+
+.round-row-active {
+  background: #FFF8ED !important;
+  outline: 2px solid #D97706;
+}
+
+.round-input-highlight-box {
+  background: #FFFDF8;
+  border: 2px solid #D97706 !important;
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.12);
+}
+
+.input-round-active {
+  border: 2px solid #9B2A1F !important;
+  background: #FFFDF9 !important;
+  font-weight: 700;
+}
+
 /* 手機版 ≤ 760px 表格全部轉為單欄卡片並顯示小標 */
 @media (max-width: 760px) {
   .resp-table,

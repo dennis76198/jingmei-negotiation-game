@@ -108,6 +108,7 @@
     revealSellerRole: false,
     revealBuyerRole: false,
     clientRoundView: { seller: 0, buyer: 0 },
+    lastSyncedManagerRound: 0,
     previewCardIdx: { seller: null, buyer: null },
     agentDraft: {
       sagent: { offer: "", intel: "", currentDraftId: null },
@@ -1668,6 +1669,14 @@
 
   function renderAll() {
     if (!CONTENT) return;
+    const mRound = state.roomData && state.roomData.manager ? Number(state.roomData.manager.round || 0) : 0;
+    if (mRound !== state.lastSyncedManagerRound) {
+      state.lastSyncedManagerRound = mRound;
+      state.clientRoundView.seller = mRound;
+      state.clientRoundView.buyer = mRound;
+      state.previewCardIdx.seller = null;
+      state.previewCardIdx.buyer = null;
+    }
     if (!canAccessTab(state.tab)) {
       state.tab = canAccessTab(state.role) ? state.role : "room";
       try {
@@ -1719,15 +1728,23 @@
 
     const mRound = state.roomData.manager ? state.roomData.manager.round : 0;
     const roundName = ROUND_LABELS[mRound] || "第一輪";
-    roundPill.textContent = isGameStarted() ? `店長輪次：${roundName}` : "狀態：⏳ 等待店長按遊戲開始";
+    if (isGameStarted() && !isGameEnded()) {
+      roundPill.className = "status-pill blink-progress-pill";
+      roundPill.textContent = `⚡ 店長目前進度：${roundName}`;
+    } else {
+      roundPill.className = "status-pill";
+      roundPill.textContent = isGameStarted() ? `店長輪次：${roundName}` : "狀態：⏳ 等待店長按遊戲開始";
+    }
 
     const dealPrice = state.roomData.manager && state.roomData.manager.deal;
     if (dealPrice !== null && dealPrice !== undefined && dealPrice !== "") {
       dealBanner.className = "deal-banner active";
       dealBanner.textContent = `🎉 店長宣布：${formatNum(dealPrice)} 萬成交！（遊戲結束，已開放全體成員查看所有角色細節與回饋）`;
     } else if (isGameStarted()) {
-      dealBanner.className = "deal-banner started";
-      dealBanner.textContent = `🔥 遊戲正式開始！買賣方角色卡已開啟（目前進度：${roundName}）`;
+      dealBanner.className = "deal-banner started active";
+      dealBanner.innerHTML = `🔥 遊戲正式開始！買賣方角色卡已開啟 ｜ <span class="blink-banner-round">⚡ 店長目前進度：正在進行【${escapeHtml(
+        roundName
+      )}】</span>`;
     } else {
       dealBanner.className = "deal-banner";
       dealBanner.textContent = "";
@@ -2674,11 +2691,28 @@
           <div class="round-tabs">
             ${ROUND_LABELS.map(
               (lbl, idx) => `
-              <button type="button" class="round-btn ${curRound === idx ? "active" : ""}" data-round="${idx}">
-                ${escapeHtml(lbl)}
+              <button type="button" class="round-btn ${curRound === idx ? "active" : ""} ${
+                managerRound === idx ? "mgr-current-round" : ""
+              }" data-round="${idx}">
+                ${escapeHtml(lbl)}${managerRound === idx ? ` <span class="blink-round-mini">⚡現在進度</span>` : ""}
               </button>`
             ).join("")}
           </div>
+        </div>
+
+        <div class="blink-progress-banner">
+          <span class="blink-round-text">⚡ 店長目前進度：正在進行【${escapeHtml(ROUND_LABELS[managerRound])}】！請填寫下方「${escapeHtml(
+      ROUND_LABELS[managerRound]
+    )}」的數字與條件</span>
+          ${
+            curRound !== managerRound
+              ? `<button type="button" class="btn btn-sm btn-primary" id="btn-jump-mgr-round">👉 切回【${escapeHtml(
+                  ROUND_LABELS[managerRound]
+                )}】填寫</button>`
+              : `<span style="font-size:0.82rem;font-weight:700;color:var(--ok-text);">✅ 已自動同步切換至【${escapeHtml(
+                  ROUND_LABELS[managerRound]
+                )}】</span>`
+          }
         </div>
 
         <!-- 抽反應卡區 -->
@@ -2745,7 +2779,10 @@
 
         <!-- 數字與條件輸入 + 快速填按鈕 -->
         <div style="margin-bottom:10px;">
-          <span class="field-label">⚡ 快速填入（${ROUND_LABELS[curRound]}）</span>
+          <span class="field-label">
+            ⚡ 快速填入（${ROUND_LABELS[curRound]}）
+            <span class="blink-round-tag" style="margin-left:6px;">🔔 店長目前進度：${escapeHtml(ROUND_LABELS[managerRound])}</span>
+          </span>
           <div style="display:flex;flex-wrap:wrap;gap:8px;">
             <button type="button" class="btn btn-sm" id="btn-qf-notdone">${escapeHtml(qf.notDoneLabel)}</button>
             <button type="button" class="btn btn-sm btn-primary" id="btn-qf-done">${escapeHtml(qf.doneLabel)}</button>
@@ -2754,13 +2791,19 @@
         </div>
 
         <div class="form-grid">
-          <div>
-            <label class="field-label" for="inp-client-price">這一輪你說的數字（萬）</label>
-            <input type="number" id="inp-client-price" min="0" max="5000" step="10" placeholder="例如：${qf.donePrice}" value="${rData.price !== null && rData.price !== undefined ? escapeHtml(rData.price) : ""}" />
+          <div class="round-input-highlight-box">
+            <label class="field-label" for="inp-client-price">
+              這一輪你說的數字（萬）
+              <span class="blink-round-tag">⚡ 現在進度：請填【${escapeHtml(ROUND_LABELS[curRound])}】數字</span>
+            </label>
+            <input type="number" id="inp-client-price" class="input-round-active" min="0" max="5000" step="10" placeholder="例如：${qf.donePrice}" value="${rData.price !== null && rData.price !== undefined ? escapeHtml(rData.price) : ""}" />
           </div>
-          <div>
-            <label class="field-label" for="inp-client-cond">你要換的條件（最多 80 字）</label>
-            <input type="text" id="inp-client-cond" maxlength="80" placeholder="${escapeHtml(qf.condText)}" value="${escapeHtml(rData.cond || "")}" />
+          <div class="round-input-highlight-box">
+            <label class="field-label" for="inp-client-cond">
+              你要換的條件（最多 80 字）
+              <span class="blink-round-tag">⚡ 【${escapeHtml(ROUND_LABELS[curRound])}】條件</span>
+            </label>
+            <input type="text" id="inp-client-cond" class="input-round-active" maxlength="80" placeholder="${escapeHtml(qf.condText)}" value="${escapeHtml(rData.cond || "")}" />
           </div>
         </div>
       </div>
@@ -2794,6 +2837,15 @@
     const btnFollow = document.getElementById("btn-follow-manager-round");
     if (btnFollow) {
       btnFollow.addEventListener("click", () => {
+        const mRound = state.roomData.manager ? Number(state.roomData.manager.round || 0) : 0;
+        state.clientRoundView[clientKey] = mRound;
+        state.previewCardIdx[clientKey] = null;
+        renderAll();
+      });
+    }
+    const btnJumpMgrRound = document.getElementById("btn-jump-mgr-round");
+    if (btnJumpMgrRound) {
+      btnJumpMgrRound.addEventListener("click", () => {
         const mRound = state.roomData.manager ? Number(state.roomData.manager.round || 0) : 0;
         state.clientRoundView[clientKey] = mRound;
         state.previewCardIdx[clientKey] = null;
@@ -2860,30 +2912,36 @@
     const inpPrice = document.getElementById("inp-client-price");
     const inpCond = document.getElementById("inp-client-cond");
 
-    const syncRoundFields = (newPrice, newCond) => {
-      writeRoomPatch(`clients/${clientKey}/rounds/${curRound}/price`, sanitizePrice(newPrice));
-      writeRoomPatch(`clients/${clientKey}/rounds/${curRound}/cond`, String(newCond || "").slice(0, 80));
-      writeRoomPatch(`clients/${clientKey}/by`, state.uid);
+    const syncRoundFields = (newPrice, newCond, skipRender) => {
+      writeRoomPatch(`clients/${clientKey}/rounds/${curRound}/price`, sanitizePrice(newPrice), true);
+      writeRoomPatch(`clients/${clientKey}/rounds/${curRound}/cond`, String(newCond || "").slice(0, 80), true);
+      writeRoomPatch(`clients/${clientKey}/by`, state.uid, skipRender);
     };
 
     document.getElementById("btn-qf-notdone").addEventListener("click", () => {
       inpPrice.value = qf.notDonePrice;
-      syncRoundFields(qf.notDonePrice, inpCond.value);
+      syncRoundFields(qf.notDonePrice, inpCond.value, false);
     });
     document.getElementById("btn-qf-done").addEventListener("click", () => {
       inpPrice.value = qf.donePrice;
-      syncRoundFields(qf.donePrice, inpCond.value);
+      syncRoundFields(qf.donePrice, inpCond.value, false);
     });
     document.getElementById("btn-qf-cond").addEventListener("click", () => {
       inpCond.value = qf.condText;
-      syncRoundFields(inpPrice.value, qf.condText);
+      syncRoundFields(inpPrice.value, qf.condText, false);
     });
 
+    inpPrice.addEventListener("input", () => {
+      syncRoundFields(inpPrice.value, inpCond.value, true);
+    });
+    inpCond.addEventListener("input", () => {
+      syncRoundFields(inpPrice.value, inpCond.value, true);
+    });
     inpPrice.addEventListener("change", () => {
-      syncRoundFields(inpPrice.value, inpCond.value);
+      syncRoundFields(inpPrice.value, inpCond.value, false);
     });
     inpCond.addEventListener("change", () => {
-      syncRoundFields(inpPrice.value, inpCond.value);
+      syncRoundFields(inpPrice.value, inpCond.value, false);
     });
   }
 
@@ -3037,6 +3095,7 @@
     const agentHolderNick = (state.roomData.agents[agentKey] && state.roomData.agents[agentKey].byNick) || "";
     const checks = checkAgentLadder(agentKey, notes);
     const draftObj = (state.agentDraft && state.agentDraft[agentKey]) || { offer: "", intel: "" };
+    const managerRound = state.roomData.manager ? Number(state.roomData.manager.round || 0) : 0;
 
     const viewerBanner =
       state.role !== agentKey
@@ -3072,7 +3131,18 @@
 
       <!-- 即時連線區：你的客戶與另一位仲介 -->
       <div class="card">
-        <div class="card-title">📡 連線：你的客戶（${clientLabel}）和另一位仲介（${otherAgentLabel}）</div>
+        <div class="card-title">
+          <span>📡 連線：你的客戶（${clientLabel}）和另一位仲介（${otherAgentLabel}）</span>
+          <span class="blink-round-tag">⚡ 店長目前進度：【${escapeHtml(ROUND_LABELS[managerRound])}】</span>
+        </div>
+
+        <div class="blink-progress-banner">
+          <span class="blink-round-text">⚡ 店長目前切換進度：正在進行【${escapeHtml(
+            ROUND_LABELS[managerRound]
+          )}】！請確認${clientLabel}【${escapeHtml(ROUND_LABELS[managerRound])}】的數字，並填寫下方【${escapeHtml(
+      ROUND_LABELS[managerRound]
+    )}】帶過去的數字與回合紀錄</span>
+        </div>
 
         <h3 style="font-size:0.96rem;margin-bottom:8px;">${clientLabel}每一輪說的數字、條件與反應卡台詞</h3>
         <table class="resp-table" style="margin-bottom:16px;">
@@ -3090,6 +3160,7 @@
               const hasCard = r.card !== null && r.card !== undefined && reacts[r.card];
               const cardNo = hasCard ? String(r.card + 1).padStart(2, "0") : "";
               const cardLine = hasCard ? `${clientLabel}反應卡 ${cardNo}：${reacts[r.card][0]}` : "尚未抽卡";
+              const isCurMgrRound = idx === managerRound;
               const saidSummary =
                 r.price !== null || r.cond
                   ? `${clientLabel}・${rLbl} 說：${r.price !== null ? formatNum(r.price) + " 萬" : "未填數字"}${
@@ -3097,12 +3168,22 @@
                     }`
                   : "尚未表態";
               return `
-                <tr>
-                  <td data-label="輪次"><strong>${escapeHtml(rLbl)}</strong></td>
-                  <td data-label="${clientLabel}說的數字與條件"><strong>${escapeHtml(saidSummary)}</strong></td>
+                <tr class="${isCurMgrRound ? "round-row-active" : ""}">
+                  <td data-label="輪次">
+                    <strong>${escapeHtml(rLbl)}</strong>
+                    ${isCurMgrRound ? `<div class="blink-round-tag" style="margin-top:4px;">⚡ 現在進度</div>` : ""}
+                  </td>
+                  <td data-label="${clientLabel}說的數字與條件">
+                    <strong>${escapeHtml(saidSummary)}</strong>
+                    ${
+                      isCurMgrRound && r.price === null && !r.cond
+                        ? `<div class="blink-round-inline-tip">⏳ 等待${clientLabel}填寫【${escapeHtml(rLbl)}】數字...</div>`
+                        : ""
+                    }
+                  </td>
                   <td data-label="抽到的反應卡台詞">${escapeHtml(cardLine)}</td>
                   <td data-label="動作">
-                    <button type="button" class="btn btn-sm btn-BringToLog" data-round="${idx}">⬇️ 帶入回合紀錄</button>
+                    <button type="button" class="btn btn-sm ${isCurMgrRound ? "btn-primary" : ""} btn-BringToLog" data-round="${idx}">⬇️ 帶入回合紀錄</button>
                   </td>
                 </tr>
               `;
@@ -3121,22 +3202,27 @@
             </div>
           </div>
 
-          <div style="background:var(--light-bg);padding:12px;border-radius:8px;border:1px solid var(--line);">
-            <div class="field-label">📤 傳給${otherAgentLabel}的話（同步給${otherAgentLabel}、店長與觀察者）</div>
-            <div style="display:grid;grid-template-columns:140px 1fr;gap:8px;margin-bottom:8px;">
+          <div class="round-input-highlight-box" style="background:var(--light-bg);padding:12px;border-radius:8px;">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;">
+              <div class="field-label" style="margin-bottom:0;">📤 傳給${otherAgentLabel}的話（同步給${otherAgentLabel}、店長與觀察者）</div>
+              <span class="blink-round-tag">⚡ 現在進度：請填【${escapeHtml(ROUND_LABELS[managerRound])}】帶過去數字</span>
+            </div>
+            <div style="display:grid;grid-template-columns:145px 1fr;gap:8px;margin-bottom:8px;">
               <div>
-                <input type="number" id="inp-agent-offer" min="0" max="5000" step="10" placeholder="帶過去萬" value="${escapeHtml(
-                  draftObj.offer || ""
-                )}" />
+                <input type="number" id="inp-agent-offer" class="input-round-active" min="0" max="5000" step="10" placeholder="${escapeHtml(
+                  ROUND_LABELS[managerRound]
+                )}帶過去萬" value="${escapeHtml(draftObj.offer || "")}" />
               </div>
               <div>
-                <input type="text" id="inp-agent-intel" maxlength="300" placeholder="輸入買方/屋主的故事與條件（最多 300 字）" value="${escapeHtml(
-                  draftObj.intel || ""
-                )}" />
+                <input type="text" id="inp-agent-intel" class="input-round-active" maxlength="300" placeholder="輸入【${escapeHtml(
+                  ROUND_LABELS[managerRound]
+                )}】買方/屋主的故事與條件（最多 300 字）" value="${escapeHtml(draftObj.intel || "")}" />
               </div>
             </div>
             <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
-              <button type="button" id="btn-send-agent-sync" class="btn btn-sm btn-primary">同步傳送給${otherAgentLabel}</button>
+              <button type="button" id="btn-send-agent-sync" class="btn btn-sm btn-primary">同步傳送給${otherAgentLabel}（${escapeHtml(
+      ROUND_LABELS[managerRound]
+    )}）</button>
               <span id="agent-send-feedback" style="font-size:0.82rem;color:var(--ok-text);font-weight:700;"></span>
             </div>
             <div id="my-agent-sent-log-box" style="margin-top:10px;">
@@ -3253,14 +3339,17 @@
                 const nRow = notes.ladder[idx];
                 const isTarget = idx === 2;
                 const isEst = idx === 3;
+                const isCurMgrStep = !isEst && idx === managerRound;
                 return `
-                  <tr>
+                  <tr class="${isCurMgrStep ? "round-row-active" : ""}">
                     <td data-label="步驟">
                       <strong>${escapeHtml(lRow[0])}</strong>
                       <div style="font-size:0.78rem;color:var(--muted);">${escapeHtml(lRow[1])}</div>
+                      ${isCurMgrStep ? `<div class="blink-round-tag" style="margin-top:4px;">⚡ 現在進度：${escapeHtml(ROUND_LABELS[managerRound])}</div>` : ""}
                     </td>
                     <td data-label="數字（萬）">
-                      <input type="number" class="inp-ladder-price" data-idx="${idx}" min="0" max="5000" step="10" placeholder="${
+                      ${isCurMgrStep ? `<div class="blink-round-inline-tip" style="margin-bottom:3px;">⚡ 請填【${escapeHtml(ROUND_LABELS[managerRound])}】數字</div>` : ""}
+                      <input type="number" class="inp-ladder-price ${isCurMgrStep ? "input-round-active" : ""}" data-idx="${idx}" min="0" max="5000" step="10" placeholder="${
                         isTarget ? "自己推算目標價" : "萬"
                       }" value="${escapeHtml(nRow.price)}" />
                     </td>
@@ -3327,13 +3416,18 @@
 
       <!-- 回合紀錄 -->
       <div class="card">
-        <div class="card-title">📝 回合紀錄</div>
+        <div class="card-title">
+          <span>📝 回合紀錄</span>
+          <span class="blink-round-tag">⚡ 店長目前進度：正在進行【${escapeHtml(ROUND_LABELS[managerRound])}】，請填寫【${escapeHtml(
+      ROUND_LABELS[managerRound]
+    )}】數字！</span>
+        </div>
         <table class="resp-table">
           <thead>
             <tr>
               <th>輪次</th>
               <th style="width:110px;">反應卡號</th>
-              <th style="width:130px;">${escapeHtml(A.log_head)}</th>
+              <th style="width:150px;">${escapeHtml(A.log_head)}</th>
               <th>我怎麼接</th>
               <th>換到的條件</th>
             </tr>
@@ -3341,20 +3435,25 @@
           <tbody>
             ${ROUND_LABELS.map((rLbl, idx) => {
               const lg = notes.logs[idx];
+              const isCurMgrRound = idx === managerRound;
               return `
-                <tr>
-                  <td data-label="輪次"><strong>${escapeHtml(rLbl)}</strong></td>
+                <tr class="${isCurMgrRound ? "round-row-active" : ""}">
+                  <td data-label="輪次">
+                    <strong>${escapeHtml(rLbl)}</strong>
+                    ${isCurMgrRound ? `<div class="blink-round-tag" style="margin-top:4px;">⚡ 現在進度</div>` : ""}
+                  </td>
                   <td data-label="反應卡號">
-                    <input type="text" class="inp-log-card" data-idx="${idx}" placeholder="例：01" value="${escapeHtml(lg.card)}" />
+                    <input type="text" class="inp-log-card ${isCurMgrRound ? "input-round-active" : ""}" data-idx="${idx}" placeholder="例：01" value="${escapeHtml(lg.card)}" />
                   </td>
                   <td data-label="${escapeHtml(A.log_head)}">
-                    <input type="text" class="inp-log-price" data-idx="${idx}" placeholder="萬" value="${escapeHtml(lg.price)}" />
+                    ${isCurMgrRound ? `<div class="blink-round-inline-tip" style="margin-bottom:3px;">⚡ 請填【${escapeHtml(rLbl)}】數字</div>` : ""}
+                    <input type="text" class="inp-log-price ${isCurMgrRound ? "input-round-active" : ""}" data-idx="${idx}" placeholder="${escapeHtml(rLbl)}萬" value="${escapeHtml(lg.price)}" />
                   </td>
                   <td data-label="我怎麼接">
-                    <input type="text" class="inp-log-reply" data-idx="${idx}" placeholder="你說了什麼化解" value="${escapeHtml(lg.reply)}" />
+                    <input type="text" class="inp-log-reply ${isCurMgrRound ? "input-round-active" : ""}" data-idx="${idx}" placeholder="你說了什麼化解" value="${escapeHtml(lg.reply)}" />
                   </td>
                   <td data-label="換到的條件">
-                    <input type="text" class="inp-log-cond" data-idx="${idx}" placeholder="這輪換到什麼條件" value="${escapeHtml(lg.cond)}" />
+                    <input type="text" class="inp-log-cond ${isCurMgrRound ? "input-round-active" : ""}" data-idx="${idx}" placeholder="這輪換到什麼條件" value="${escapeHtml(lg.cond)}" />
                   </td>
                 </tr>
               `;
