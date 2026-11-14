@@ -132,7 +132,7 @@
   }
 
   function getRoomRoleReadiness() {
-    const playersMap = (state.roomData && state.roomData.players) || {};
+    const playersMap = state.joined && state.roomCode && state.roomData ? state.roomData.players || {} : {};
     const onlinePlayers = Object.values(playersMap).filter((p) => p && p.online);
     const coreRoleIds = ["seller", "buyer", "sagent", "bagent", "manager"];
     const coreRoles = coreRoleIds.map((rId) => {
@@ -263,9 +263,16 @@
     };
   }
 
-  function createEmptyRoomData() {
+  function createEmptyRoomData(roomCode) {
+    const cleanCode = roomCode !== undefined ? normalizeRoomCode(roomCode) : state && state.roomCode ? normalizeRoomCode(state.roomCode) : "";
     return {
-      meta: { createdAt: Date.now(), updatedAt: Date.now(), resetId: 0, scenario: state ? state.scenario || "jingmei" : "jingmei" },
+      meta: {
+        roomCode: cleanCode,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        resetId: 0,
+        scenario: state ? state.scenario || "jingmei" : "jingmei"
+      },
       players: {},
       manager: { started: false, round: 0, deal: null, by: null, updatedAt: 0 },
       clients: {
@@ -792,19 +799,28 @@
     return base;
   }
 
-  // 合併兩份房間資料：確保遊戲中左邊出現過的仲介傳話與各角色填寫內容絕不被新進房間裝置覆蓋或刪除
+  // 合併兩份房間資料：確保遊戲中左邊出現過的仲介傳話與各角色填寫內容絕不被新進房間裝置覆蓋或刪除（且嚴格隔離不同房間）
   function mergeRoomData(curRaw, incRaw) {
     const cur = normalizeRoomData(curRaw);
     const inc = normalizeRoomData(incRaw);
+    const curRoom = (cur.meta && cur.meta.roomCode) ? normalizeRoomCode(cur.meta.roomCode) : "";
+    const incRoom = (inc.meta && inc.meta.roomCode) ? normalizeRoomCode(inc.meta.roomCode) : "";
+    // 若兩份資料屬於不同房間代碼，絕不跨房合併，直接以新房間資料為準
+    if (curRoom && incRoom && curRoom !== incRoom) {
+      return inc;
+    }
+
     const curReset = Number((cur.meta && cur.meta.resetId) || 0);
     const incReset = Number((inc.meta && inc.meta.resetId) || 0);
     if (incReset > curReset) return inc;
     if (curReset > incReset) return cur;
 
-    const out = createEmptyRoomData();
+    const targetRoomCode = incRoom || curRoom || (state && state.roomCode ? normalizeRoomCode(state.roomCode) : "");
+    const out = createEmptyRoomData(targetRoomCode);
     const curTime = Number((cur.meta && cur.meta.updatedAt) || 0);
     const incTime = Number((inc.meta && inc.meta.updatedAt) || 0);
     out.meta = {
+      roomCode: targetRoomCode,
       createdAt: Math.min(cur.meta.createdAt || Date.now(), inc.meta.createdAt || Date.now()),
       updatedAt: Math.max(curTime, incTime),
       resetId: curReset,
@@ -937,21 +953,44 @@
   }
 
   function loadLocalRoom(code) {
+    const cleanCode = normalizeRoomCode(code);
+    if (!cleanCode) {
+      state.roomData = createEmptyRoomData("");
+      return;
+    }
     const all = getAllLocalRooms();
-    if (all[code]) {
-      state.roomData = mergeRoomData(state.roomData, all[code]);
-    } else if (!state.roomData) {
-      state.roomData = createEmptyRoomData();
+    const curRoom = state.roomData && state.roomData.meta && state.roomData.meta.roomCode
+      ? normalizeRoomCode(state.roomData.meta.roomCode)
+      : "";
+    // 若記憶體中目前是別的房間，先重置為新房間的乾淨結構，絕不把舊房間成員帶過來
+    if (!state.roomData || (curRoom && curRoom !== cleanCode)) {
+      state.roomData = createEmptyRoomData(cleanCode);
+    }
+    if (all[cleanCode]) {
+      const stored = all[cleanCode];
+      if (stored && stored.meta) stored.meta.roomCode = cleanCode;
+      state.roomData = mergeRoomData(state.roomData, stored);
+      if (state.roomData && state.roomData.meta) {
+        state.roomData.meta.roomCode = cleanCode;
+      }
+    } else {
+      state.roomData = createEmptyRoomData(cleanCode);
     }
   }
 
   function saveLocalRoom(code, skipMqttPublish) {
     try {
+      const cleanCode = normalizeRoomCode(code);
+      if (!cleanCode) return;
       const all = getAllLocalRooms();
+      if (!state.roomData || !state.roomData.meta) {
+        state.roomData = createEmptyRoomData(cleanCode);
+      }
+      state.roomData.meta.roomCode = cleanCode;
       state.roomData.meta.updatedAt = Date.now();
-      all[code] = state.roomData;
+      all[cleanCode] = state.roomData;
       localStorage.setItem(LS_LOCAL_ROOMS_KEY, JSON.stringify(all));
-      if (bc) bc.postMessage({ roomCode: code, t: Date.now() });
+      if (bc) bc.postMessage({ roomCode: cleanCode, t: Date.now() });
       if (!skipMqttPublish) {
         publishMqttRoomState();
       }
@@ -1076,7 +1115,46 @@
     }
   }
 
-  function joinRoomInternal(code) {
+  function joinRoomInternal(codeRaw) {
+    const code = normalizeRoomCode(codeRaw);
+    if (!code) return;
+
+    // 若原本已在另一個不同的房間中，先在舊房間標記離線，並徹底重置 state.roomData，避免舊房間成員混入新房間
+    const prevRoomCode =
+      state.roomData && state.roomData.meta && state.roomData.meta.roomCode
+        ? normalizeRoomCode(state.roomData.meta.roomCode)
+        : state.roomCode
+        ? normalizeRoomCode(state.roomCode)
+        : "";
+
+    if (prevRoomCode && prevRoomCode !== code) {
+      if (state.firebaseReady && db) {
+        db.ref(`rooms/${prevRoomCode}/players/${state.uid}`).update({
+          online: false,
+          lastSeen: firebase.database.ServerValue.TIMESTAMP
+        });
+      } else {
+        const all = getAllLocalRooms();
+        if (all[prevRoomCode] && all[prevRoomCode].players && all[prevRoomCode].players[state.uid]) {
+          all[prevRoomCode].players[state.uid].online = false;
+          all[prevRoomCode].players[state.uid].lastSeen = Date.now();
+          localStorage.setItem(LS_LOCAL_ROOMS_KEY, JSON.stringify(all));
+          if (bc) bc.postMessage({ roomCode: prevRoomCode, t: Date.now() });
+          if (mqttClient && mqttConnected) {
+            try {
+              mqttClient.publish(`jingmei-clarity-2026/rooms/${prevRoomCode}`, JSON.stringify(all[prevRoomCode]), {
+                qos: 0,
+                retain: true
+              });
+            } catch (e) {}
+          }
+        }
+      }
+      state.roomData = createEmptyRoomData(code);
+    } else if (!state.roomData || !state.roomData.meta || state.roomData.meta.roomCode !== code) {
+      state.roomData = createEmptyRoomData(code);
+    }
+
     if (roomRef) {
       roomRef.off();
       roomRef = null;
@@ -1090,7 +1168,7 @@
       roomRef.on("value", (snap) => {
         const val = snap.val();
         if (!val) {
-          const initData = createEmptyRoomData();
+          const initData = createEmptyRoomData(code);
           initData.players[state.uid] = {
             nick: state.nick,
             role: state.role,
@@ -1100,7 +1178,9 @@
           roomRef.set(initData);
           state.roomData = initData;
         } else {
+          if (val.meta) val.meta.roomCode = code;
           state.roomData = mergeRoomData(state.roomData, val);
+          if (state.roomData && state.roomData.meta) state.roomData.meta.roomCode = code;
         }
         renderAll();
       });
@@ -1127,7 +1207,14 @@
     } else if (state.roomCode) {
       markLocalPlayerOnline(false);
     }
+    if (mqttClient && mqttConnected && currentMqttTopic) {
+      try {
+        mqttClient.unsubscribe(currentMqttTopic);
+      } catch (e) {}
+      currentMqttTopic = null;
+    }
     state.joined = false;
+    state.roomData = createEmptyRoomData("");
     saveSession();
     renderAll();
   }
@@ -2025,10 +2112,11 @@
       }
     }
 
+    const roomLabel = state.joined && state.roomCode ? `組別房間：${escapeHtml(state.roomCode)}` : "尚未加入房間";
     return `
       <div class="card" style="border:2px solid ${started ? "var(--ok-text)" : "var(--accent)"};">
         <div class="card-title">
-          <span>🎬 遊戲啟動控台（5 大核心角色到位狀態）</span>
+          <span>🎬 遊戲啟動控台（${roomLabel}｜5 大核心角色到位狀態）</span>
           <span style="font-size:0.85rem;font-weight:700;color:${started ? "var(--ok-text)" : "var(--brick)"};">
             ${ended ? "🎉 遊戲已成交結束" : started ? "🔥 遊戲進行中（角色卡已解鎖）" : "⏳ 準備階段（買賣方角色卡鎖定中）"}
           </span>
@@ -2062,7 +2150,7 @@
 
   // ==================== 5.1 房間頁 ====================
   function renderRoomPage() {
-    const playersMap = state.roomData.players || {};
+    const playersMap = state.joined && state.roomCode && state.roomData ? state.roomData.players || {} : {};
     const playersList = Object.entries(playersMap).map(([uid, p]) => ({
       uid,
       nick: p.nick || "匿名",
@@ -2187,8 +2275,8 @@
 
       <div class="card">
         <div class="card-title">
-          <span>3. 房間成員清單（${state.joined && state.roomCode ? `代碼：${escapeHtml(state.roomCode)}` : "尚未加入"}）</span>
-          <span style="font-size:0.85rem;color:var(--muted);">5 人一組・4 人時講師兼店長・3 人時一人兼兩邊仲介</span>
+          <span>3. 房間成員清單（${state.joined && state.roomCode ? `組別房間代碼：${escapeHtml(state.roomCode)}` : "尚未加入房間"}）</span>
+          <span style="font-size:0.85rem;color:var(--muted);">依房間代碼獨立分組・5 人一組・觀察者不限人數</span>
         </div>
         ${
           playersList.length === 0
@@ -2271,7 +2359,6 @@
         msgEl.textContent = "請輸入 2–12 碼英數組別代碼（例如：a1）";
         return;
       }
-      state.roomCode = code;
       state.nick = nick;
       msgEl.textContent = "";
       joinRoomInternal(code);
