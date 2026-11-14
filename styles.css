@@ -117,6 +117,10 @@ h1, h2, h3, h4 {
 .deal-banner.active {
   display: flex;
 }
+.deal-banner.started {
+  background: #8B2F1D;
+  border-bottom-color: #5E1D11;
+}
 
 /* 分頁導覽列 */
 .nav-tabs {
@@ -908,6 +912,43 @@ textarea {
   flex-direction: column;
   gap: 8px;
   background: rgba(255, 253, 248, 0.7);
+}
+
+/* 遊戲啟動控台（5 大核心角色到位狀態） */
+.ready-slots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 10px;
+}
+.ready-slot {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1.5px solid var(--line);
+  background: #FFFFFF;
+  transition: all 0.15s ease;
+}
+.ready-slot.ready {
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
+}
+.ready-slot.waiting {
+  border-style: dashed;
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+}
+.ready-status-pill {
+  font-size: 0.76rem;
+  font-weight: 900;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.ready-status-pill.ok {
+  background: var(--ok-text);
+  color: #FFFDF8;
+}
+.ready-status-pill.wait {
+  background: var(--warn-text);
+  color: #FFFDF8;
 }
 
 /* 手機版 ≤ 760px 表格全部轉為單欄卡片並顯示小標 */

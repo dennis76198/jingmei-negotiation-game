@@ -121,6 +121,36 @@
     return deal !== null && deal !== undefined && deal !== "";
   }
 
+  function isGameStarted() {
+    if (!state.roomData || !state.roomData.manager) return false;
+    return !!(state.roomData.manager.started || isGameEnded());
+  }
+
+  function getRoomRoleReadiness() {
+    const playersMap = (state.roomData && state.roomData.players) || {};
+    const onlinePlayers = Object.values(playersMap).filter((p) => p && p.online);
+    const coreRoleIds = ["seller", "buyer", "sagent", "bagent", "manager"];
+    const coreRoles = coreRoleIds.map((rId) => {
+      const rObj = ROLES.find((r) => r.id === rId) || { id: rId, short: rId, color: "#4A3B2E", colorClass: "role-manager" };
+      const holders = onlinePlayers.filter((p) => p.role === rId).map((p) => p.nick || "學員");
+      return {
+        id: rId,
+        short: rObj.short,
+        displayName: getRoleDisplayName(rId),
+        color: rObj.color,
+        colorClass: rObj.colorClass,
+        holders,
+        ready: holders.length > 0
+      };
+    });
+    const missingRoles = coreRoles.filter((r) => !r.ready).map((r) => r.short);
+    return {
+      coreRoles,
+      missingRoles,
+      allReady: missingRoles.length === 0
+    };
+  }
+
   function canAccessTab(tabId) {
     const publicTabs = ["room", "rules", "case", "board"];
     if (publicTabs.includes(tabId)) return true;
@@ -215,7 +245,7 @@
     return {
       meta: { createdAt: Date.now(), updatedAt: Date.now(), scenario: state ? state.scenario || "jingmei" : "jingmei" },
       players: {},
-      manager: { round: 0, deal: null, by: null },
+      manager: { started: false, round: 0, deal: null, by: null },
       clients: {
         seller: createEmptyClientNode(),
         buyer: createEmptyClientNode()
@@ -535,9 +565,11 @@
     }
     if (raw.players && typeof raw.players === "object") base.players = raw.players;
     if (raw.manager && typeof raw.manager === "object") {
+      const dealNum = raw.manager.deal !== undefined && raw.manager.deal !== null && raw.manager.deal !== "" ? Number(raw.manager.deal) : null;
       base.manager = {
+        started: !!(raw.manager.started || dealNum !== null),
         round: raw.manager.round !== undefined && raw.manager.round !== null ? Number(raw.manager.round) : 0,
-        deal: raw.manager.deal !== undefined && raw.manager.deal !== null ? Number(raw.manager.deal) : null,
+        deal: dealNum,
         by: raw.manager.by || null
       };
     }
@@ -1278,12 +1310,15 @@
 
     const mRound = state.roomData.manager ? state.roomData.manager.round : 0;
     const roundName = ROUND_LABELS[mRound] || "第一輪";
-    roundPill.textContent = `店長輪次：${roundName}`;
+    roundPill.textContent = isGameStarted() ? `店長輪次：${roundName}` : "狀態：⏳ 等待店長按遊戲開始";
 
     const dealPrice = state.roomData.manager && state.roomData.manager.deal;
     if (dealPrice !== null && dealPrice !== undefined && dealPrice !== "") {
       dealBanner.className = "deal-banner active";
       dealBanner.textContent = `🎉 店長宣布：${formatNum(dealPrice)} 萬成交！（遊戲結束，已開放全體成員查看所有角色細節與回饋）`;
+    } else if (isGameStarted()) {
+      dealBanner.className = "deal-banner started";
+      dealBanner.textContent = `🔥 遊戲正式開始！買賣方角色卡已開啟（目前進度：${roundName}）`;
     } else {
       dealBanner.className = "deal-banner";
       dealBanner.textContent = "";
@@ -1390,6 +1425,7 @@
         break;
     }
     bindSubfolderStateEvents();
+    bindGameStartControlEvents();
   }
 
   function bindSubfolderStateEvents() {
@@ -1398,6 +1434,145 @@
       det.addEventListener("toggle", () => {
         if (det.open) openSubfolderIds.add(fId);
         else openSubfolderIds.delete(fId);
+      });
+    });
+  }
+
+  function renderGameStartControlCard() {
+    const readiness = getRoomRoleReadiness();
+    const started = isGameStarted();
+    const ended = isGameEnded();
+    const isManager = state.role === "manager";
+
+    const roleSlotsHtml = readiness.coreRoles
+      .map(
+        (r) => `
+        <div class="ready-slot ${r.ready ? "ready" : "waiting"}">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+            <span class="role-badge ${r.colorClass}">${escapeHtml(r.short)}</span>
+            <span style="font-size:0.8rem;font-weight:900;color:${r.ready ? "var(--ok-text)" : "var(--muted)"};">
+              ${r.ready ? "✅ 已到位" : "⏳ 等待加入"}
+            </span>
+          </div>
+          <div style="margin-top:6px;font-size:0.86rem;font-weight:700;color:var(--text);">
+            ${r.ready ? escapeHtml(r.holders.join("、")) : "尚無人進入"}
+          </div>
+        </div>`
+      )
+      .join("");
+
+    let actionAreaHtml = "";
+    if (ended) {
+      actionAreaHtml = `
+        <div class="alert alert-ok" style="margin-bottom:0;">
+          <span>🎉 <strong>遊戲已成交結束！</strong>所有角色的秘密字卡、筆記與觀察回饋皆已全面開放查看。</span>
+        </div>
+      `;
+    } else if (started) {
+      actionAreaHtml = `
+        <div class="alert alert-ok" style="margin-bottom:0;">
+          <div>
+            <div style="font-size:1.04rem;font-weight:900;">🔥 遊戲正式開始！買賣方角色卡已開啟！</div>
+            <div style="font-size:0.88rem;margin-top:2px;">請各角色點選上方導覽列或右側按鈕，進入自己的角色頁籤開啟字卡。</div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;">
+            <a href="#${escapeHtml(state.role)}" class="btn btn-primary btn-sm">👉 前往我的角色頁籤（${escapeHtml(
+        getRoleDisplayName(state.role)
+      )}）</a>
+            ${
+              isManager
+                ? `<button type="button" class="btn btn-sm btn-reset-start-state">⏸️ 退回準備狀態（重新鎖定買賣方角色卡）</button>`
+                : ""
+            }
+          </div>
+        </div>
+      `;
+    } else {
+      // 尚未開始
+      if (isManager) {
+        actionAreaHtml = `
+          <div style="background:${readiness.allReady ? "var(--ok-bg)" : "var(--warn-bg)"};border:1px solid ${
+          readiness.allReady ? "#A9DFB8" : "#F5C99B"
+        };padding:14px 16px;border-radius:10px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;">
+            <div>
+              <div style="font-weight:900;font-size:1rem;color:${readiness.allReady ? "var(--ok-text)" : "var(--warn-text)"};">
+                ${
+                  readiness.allReady
+                    ? "✅ 5 大遊戲角色皆已進入房間！請店長按下按鈕宣布「遊戲正式開始」"
+                    : `⏳ 等待所有遊戲角色進入房間（尚缺：${escapeHtml(readiness.missingRoles.join("、"))}）`
+                }
+              </div>
+              <div style="font-size:0.86rem;color:var(--text);margin-top:3px;">
+                店長按下「🚀 遊戲開始」後，屋主與買方的秘密角色卡才會正式解鎖開啟！
+              </div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+              <button type="button" class="btn ${readiness.allReady ? "btn-primary" : "btn-dark"} btn-trigger-game-start" ${
+          readiness.allReady ? "" : "disabled"
+        } style="font-size:1rem;padding:10px 20px;">
+                ${
+                  readiness.allReady
+                    ? "🚀 遊戲正式開始（開啟買賣方角色卡）"
+                    : `🔒 待角色到齊後啟動（缺：${escapeHtml(readiness.missingRoles.join("、"))}）`
+                }
+              </button>
+              ${
+                !readiness.allReady
+                  ? `<button type="button" class="btn btn-sm btn-force-game-start" title="3～4 人少人演練或單機測試時，店長可直接點此啟動遊戲">⚡ 少人演練直接開始</button>`
+                  : ""
+              }
+            </div>
+          </div>
+        `;
+      } else {
+        actionAreaHtml = `
+          <div class="alert alert-warn" style="margin-bottom:0;">
+            <div>
+              <div>🔒 <strong>買賣方角色卡目前鎖定中（等待遊戲開始）</strong></div>
+              <div style="font-size:0.88rem;font-weight:500;margin-top:2px;">
+                ${
+                  readiness.allReady
+                    ? "✅ 所有遊戲角色皆已進入房間！請等待「店長」按下【🚀 遊戲正式開始】按鈕，買賣方角色卡即可開啟。"
+                    : `⏳ 目前尚缺角色：<strong>${escapeHtml(
+                        readiness.missingRoles.join("、")
+                      )}</strong>。待所有角色進入房間後，由「店長」按下【🚀 遊戲正式開始】即可開啟買賣方角色卡！`
+                }
+              </div>
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    return `
+      <div class="card" style="border:2px solid ${started ? "var(--ok-text)" : "var(--accent)"};">
+        <div class="card-title">
+          <span>🎬 遊戲啟動控台（5 大核心角色到位狀態）</span>
+          <span style="font-size:0.85rem;font-weight:700;color:${started ? "var(--ok-text)" : "var(--brick)"};">
+            ${ended ? "🎉 遊戲已成交結束" : started ? "🔥 遊戲進行中（角色卡已解鎖）" : "⏳ 準備階段（買賣方角色卡鎖定中）"}
+          </span>
+        </div>
+        <div class="ready-slots-grid" style="margin-bottom:14px;">
+          ${roleSlotsHtml}
+        </div>
+        ${actionAreaHtml}
+      </div>
+    `;
+  }
+
+  function bindGameStartControlEvents() {
+    const doStart = () => {
+      writeRoomPatch("manager/started", true);
+      writeRoomPatch("manager/by", state.uid);
+    };
+    document.querySelectorAll(".btn-trigger-game-start, .btn-force-game-start").forEach((btn) => {
+      btn.addEventListener("click", doStart);
+    });
+    document.querySelectorAll(".btn-reset-start-state").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.revealSellerRole = false;
+        state.revealBuyerRole = false;
+        writeRoomPatch("manager/started", false);
       });
     });
   }
@@ -1524,6 +1699,8 @@
         </div>
         <div id="room-msg" style="margin-top:8px;font-size:0.88rem;color:var(--brick);font-weight:700;"></div>
       </div>
+
+      ${renderGameStartControlCard()}
 
       <div class="card">
         <div class="card-title">
@@ -1829,8 +2006,11 @@
     const reacts = isSeller ? CONTENT.SELLER_REACT : CONTENT.BUYER_REACT;
     const roleLabel = isSeller ? "屋主" : "買方";
     const canPeekAll = state.role === "manager" || state.role === "observer" || isGameEnded();
+    const gameStarted = isGameStarted();
+    const canOpenRoleCard = gameStarted || canPeekAll;
     const rawReveal = isSeller ? state.revealSellerRole : state.revealBuyerRole;
-    const revealed = canPeekAll ? rawReveal !== "force_hide" : !!rawReveal;
+    const revealed = !canOpenRoleCard ? false : canPeekAll ? rawReveal !== "force_hide" : !!rawReveal;
+    const readiness = getRoomRoleReadiness();
     const curRound = state.clientRoundView[clientKey] || 0;
     const managerRound = state.roomData.manager ? Number(state.roomData.manager.round || 0) : 0;
 
@@ -1882,24 +2062,57 @@
     return `
       <div class="page-header">
         <h1><span class="role-badge ${isSeller ? "role-seller" : "role-buyer"}">${roleLabel}秘密頁</span> ${escapeHtml(C.who)}</h1>
-        <button type="button" id="btn-toggle-role-card" class="btn ${revealed ? "btn-dark" : "btn-primary"}">
-          ${revealed ? "🙈 蓋上角色卡" : "🃏 翻開角色卡"}
-        </button>
+        ${
+          canOpenRoleCard
+            ? `<button type="button" id="btn-toggle-role-card" class="btn ${revealed ? "btn-dark" : "btn-primary"}">
+                ${revealed ? "🙈 蓋上角色卡" : "🃏 翻開角色卡"}
+              </button>`
+            : `<button type="button" id="btn-toggle-role-card" class="btn" disabled style="opacity:0.65;cursor:not-allowed;">
+                🔒 等待店長按「遊戲開始」後開啟
+              </button>`
+        }
       </div>
 
       ${wrongRoleWarning}
+      ${
+        !gameStarted && !isGameEnded()
+          ? `<div class="alert alert-warn">
+              <span>⏳ <strong>等待遊戲正式開始：</strong>當所有遊戲角色都進入房間後（目前到齊 <strong>${readiness.readyCount}／${readiness.totalRequired}</strong>），由<strong>店長按下「🚀 遊戲正式開始」按鈕</strong>，買賣方角色卡才會解鎖開啟！</span>
+              <a href="#room" class="btn btn-sm btn-dark">前往「房間」查看進度</a>
+            </div>`
+          : ""
+      }
       ${roundDiffBanner}
 
-      <!-- 角色秘密卡（預設蓋著） -->
+      <!-- 角色秘密卡（預設蓋著，且須等店長按下遊戲開始才可開啟） -->
       <div class="card">
         <div class="card-title">
           <span>🔒 ${roleLabel}角色卡（秘密設定）</span>
-          <span style="font-size:0.84rem;color:var(--muted);">切換分頁會自動蓋回，防旁人誤看</span>
+          <span style="font-size:0.84rem;color:var(--muted);">
+            ${canOpenRoleCard ? "切換分頁會自動蓋回，防旁人誤看" : "⏳ 尚未開局鎖定中（等待店長按下遊戲開始）"}
+          </span>
         </div>
         ${
-          !revealed
+          !canOpenRoleCard
+            ? `<div style="text-align:center;padding:28px 16px;background:var(--warn-bg);border:1.5px dashed var(--warn-border);border-radius:10px;">
+                <div style="font-size:1.05rem;font-weight:900;margin-bottom:8px;color:var(--warn-text);">
+                  🔒 買賣方角色卡尚未解鎖（等待店長按下「🚀 遊戲正式開始」）
+                </div>
+                <div style="font-size:0.9rem;color:var(--ink);margin-bottom:14px;">
+                  目前房間角色到齊進度：<strong>${readiness.readyCount} ／ ${readiness.totalRequired}</strong>
+                  ${
+                    readiness.missingRoles.length > 0
+                      ? `（尚待進入：${escapeHtml(readiness.missingRoles.map((r) => r.short).join("、"))}）`
+                      : "（全員已到齊！請提醒店長按下「🚀 遊戲正式開始」）"
+                  }
+                </div>
+                <button type="button" id="btn-toggle-role-card-inner" class="btn" disabled style="opacity:0.65;cursor:not-allowed;">
+                  🔒 等待店長按「遊戲開始」後才能翻開角色卡
+                </button>
+              </div>`
+            : !revealed
             ? `<div style="text-align:center;padding:24px 12px;background:var(--light-bg);border-radius:8px;">
-                <div style="font-weight:900;margin-bottom:10px;color:var(--muted);">角色卡目前已蓋上</div>
+                <div style="font-weight:900;margin-bottom:10px;color:var(--ok-text);">✅ 店長已宣布遊戲正式開始！你可以翻開角色卡查看秘密底牌</div>
                 <button type="button" id="btn-toggle-role-card-inner" class="btn btn-primary">🃏 翻開角色卡</button>
               </div>`
             : `
@@ -2091,7 +2304,12 @@
   function bindClientEvents(clientKey) {
     const isSeller = clientKey === "seller";
     const canPeekAll = state.role === "manager" || state.role === "observer" || isGameEnded();
+    const canOpenRoleCard = isGameStarted() || canPeekAll;
     const toggleCard = () => {
+      if (!canOpenRoleCard) {
+        showLockToast("🔒 請等待所有遊戲角色進入房間，並由「店長」按下「🚀 遊戲正式開始」後，買賣方角色卡才會解鎖開啟！");
+        return;
+      }
       if (canPeekAll) {
         if (isSeller) state.revealSellerRole = state.revealSellerRole === "force_hide" ? true : "force_hide";
         else state.revealBuyerRole = state.revealBuyerRole === "force_hide" ? true : "force_hide";
@@ -3054,6 +3272,7 @@
         <span>🎯 <strong>店長字卡專屬提示｜本劇本目標成交價：${formatNum(CONTENT.CASE.target)} 萬</strong>（屋主真正底線與買方真正上限皆涵蓋此目標價，兩輪後差距 40 萬內請出面完成最後一步；按下「宣布成交」後將開放所有人查看全部角色細節！）</span>
       </div>
 
+      ${renderGameStartControlCard()}
       ${renderQuickRolePeekBar("店長")}
       ${renderLiveTableCard()}
 
@@ -3728,13 +3947,15 @@
       state.notes = createDefaultNotes();
       saveNotes();
       state.previewCardIdx = { seller: null, buyer: null };
+      state.revealSellerRole = false;
+      state.revealBuyerRole = false;
 
       if (state.roomCode) {
         writeRoomPatch("clients/seller", createEmptyClientNode());
         writeRoomPatch("clients/buyer", createEmptyClientNode());
         writeRoomPatch("agents/sagent", { intel: "", offer: null, by: null, byNick: "", notes: null });
         writeRoomPatch("agents/bagent", { intel: "", offer: null, by: null, byNick: "", notes: null });
-        writeRoomPatch("manager", { round: 0, deal: null, by: null });
+        writeRoomPatch("manager", { started: false, round: 0, deal: null, by: null });
         writeRoomPatch("observers", {});
       } else {
         state.roomData = createEmptyRoomData();
